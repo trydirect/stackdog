@@ -11,7 +11,7 @@ extern crate serde_json;
 extern crate actix_cors;
 extern crate actix_rt;
 extern crate actix_web;
-extern crate dotenv;
+extern crate dotenvy;
 extern crate env_logger;
 extern crate tracing;
 extern crate tracing_subscriber;
@@ -32,7 +32,7 @@ use tracing_subscriber::FmtSubscriber;
 #[actix_rt::main]
 async fn main() -> io::Result<()> {
     // Load environment
-    if let Err(err) = dotenv::dotenv() {
+    if let Err(err) = dotenvy::dotenv() {
         eprintln!(
             "Warning: could not load .env file ({}). Continuing with existing environment.",
             err

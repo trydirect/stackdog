@@ -40,7 +40,7 @@ impl SniffOrchestrator {
         let pool = create_pool(&config.database_url)?;
         init_database(&pool)?;
 
-        let mut notification_config = NotificationConfig::default();
+        let mut notification_config = NotificationConfig::from_env();
         if let Some(ref url) = config.slack_webhook {
             notification_config = notification_config.with_slack_webhook(url.clone());
         }
