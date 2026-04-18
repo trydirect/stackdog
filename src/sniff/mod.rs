@@ -10,7 +10,7 @@ pub mod discovery;
 pub mod reader;
 pub mod reporter;
 
-use crate::alerting::notifications::NotificationConfig;
+use crate::alerting::{notifications::NotificationConfig, AlertSeverity};
 use crate::database::connection::{create_pool, init_database, DbPool};
 use crate::database::repositories::log_sources as log_sources_repo;
 use crate::detectors::DetectorRegistry;
@@ -217,7 +217,17 @@ impl SniffOrchestrator {
 
             // 4. Analyze
             log::debug!("Step 4: analyzing {} entries...", entries.len());
-            let mut summary = analyzer.summarize(&entries).await?;
+            let mut summary = match analyzer.summarize(&entries).await {
+                Ok(summary) => summary,
+                Err(err) => {
+                    log::warn!(
+                        "Primary analyzer failed for {}: {}. Falling back to local pattern analyzer.",
+                        reader.source_id(),
+                        err
+                    );
+                    analyzer::PatternAnalyzer::new().summarize(&entries).await?
+                }
+            };
             let detector_anomalies = self.detectors.detect_log_anomalies(&entries);
             if !detector_anomalies.is_empty() {
                 summary.key_events.extend(
@@ -239,8 +249,10 @@ impl SniffOrchestrator {
             log::debug!("Step 5: reporting results...");
             let report = self.reporter.report(&summary, Some(&self.pool)).await?;
             result.anomalies_found += report.anomalies_reported;
+            let source = &sources[i];
             if let Some(engine) = &self.ip_ban {
-                self.apply_ip_ban(&summary, engine).await?;
+                self.apply_ip_ban(&entries, source, &summary, engine)
+                    .await?;
             }
 
             // 6. Consume (if enabled)
@@ -280,9 +292,13 @@ impl SniffOrchestrator {
 
     async fn apply_ip_ban(
         &self,
+        entries: &[reader::LogEntry],
+        source: &discovery::LogSource,
         summary: &analyzer::LogSummary,
         engine: &IpBanEngine,
     ) -> Result<()> {
+        self.apply_auth_log_ip_ban(entries, source, engine).await?;
+
         for anomaly in &summary.anomalies {
             if !should_auto_ban(anomaly) {
                 continue;
@@ -306,9 +322,42 @@ impl SniffOrchestrator {
                         source_type: "sniff".into(),
                         reason: anomaly.description.clone(),
                         severity,
-                        container_id: None,
-                        source_path: None,
+                        container_id: source_container_id(source),
+                        source_path: source_path(source, None),
                         sample_line: Some(anomaly.sample_line.clone()),
+                    })
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_auth_log_ip_ban(
+        &self,
+        entries: &[reader::LogEntry],
+        source: &discovery::LogSource,
+        engine: &IpBanEngine,
+    ) -> Result<()> {
+        for entry in entries {
+            let Some((reason, severity)) = ssh_auth_failure_offense(&entry.line) else {
+                continue;
+            };
+
+            for ip in IpBanEngine::extract_ip_candidates(&entry.line) {
+                if !is_public_routable_ipv4(&ip) {
+                    continue;
+                }
+
+                engine
+                    .record_offense(OffenseInput {
+                        ip_address: ip,
+                        source_type: "sniff".into(),
+                        reason: reason.into(),
+                        severity,
+                        container_id: source_container_id(source),
+                        source_path: source_path(source, Some(entry)),
+                        sample_line: Some(entry.line.clone()),
                     })
                     .await?;
             }
@@ -409,6 +458,43 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
     ]
     .iter()
     .any(|needle| description.contains(needle))
+}
+
+fn ssh_auth_failure_offense(line: &str) -> Option<(&'static str, AlertSeverity)> {
+    let line = line.to_ascii_lowercase();
+
+    if line.contains("failed password for") {
+        return Some(("Failed ssh login", AlertSeverity::High));
+    }
+
+    if line.contains("auth fail [preauth]") {
+        return Some((
+            "SSH authentication failed during preauth",
+            AlertSeverity::High,
+        ));
+    }
+
+    None
+}
+
+fn source_container_id(source: &discovery::LogSource) -> Option<String> {
+    matches!(
+        source.source_type,
+        discovery::LogSourceType::DockerContainer
+    )
+    .then(|| source.path_or_id.clone())
+}
+
+fn source_path(source: &discovery::LogSource, entry: Option<&reader::LogEntry>) -> Option<String> {
+    entry
+        .and_then(|entry| entry.metadata.get("source_path").cloned())
+        .or_else(|| {
+            matches!(
+                source.source_type,
+                discovery::LogSourceType::SystemLog | discovery::LogSourceType::CustomFile
+            )
+            .then(|| source.path_or_id.clone())
+        })
 }
 
 fn is_public_routable_ipv4(ip: &str) -> bool {
@@ -521,6 +607,14 @@ mod tests {
                 confidence: None,
             }],
         }
+    }
+
+    fn test_log_source() -> discovery::LogSource {
+        discovery::LogSource::new(
+            discovery::LogSourceType::SystemLog,
+            "/var/log/auth.log".into(),
+            "auth.log".into(),
+        )
     }
 
     #[test]
@@ -674,6 +768,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_apply_auth_log_ip_ban_records_failed_ssh_attempts() {
+        use crate::sniff::discovery::{LogSource, LogSourceType};
+        use crate::sniff::reader::LogEntry;
+        use std::collections::HashMap;
+
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                max_retries: 10,
+                find_time_secs: 300,
+                ban_time_secs: 60,
+                unban_check_interval_secs: 60,
+            },
+        );
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/auth.log".into(),
+            "auth.log".into(),
+        );
+        let entries = (0..5)
+            .map(|attempt| LogEntry {
+                source_id: source.id.clone(),
+                timestamp: Utc::now(),
+                line: format!(
+                    "Apr 18 18:14:{attempt:02} host sshd[1234]: Failed password for invalid user test from 95.163.183.214 port 500{attempt} ssh2"
+                ),
+                metadata: HashMap::from([(
+                    "source_path".into(),
+                    "/var/log/auth.log".into(),
+                )]),
+            })
+            .collect::<Vec<_>>();
+
+        orchestrator
+            .apply_auth_log_ip_ban(&entries, &source, &engine)
+            .await
+            .unwrap();
+
+        let offenses = find_recent_offenses(
+            &orchestrator.pool,
+            "95.163.183.214",
+            "sniff",
+            Utc::now() - chrono::Duration::minutes(5),
+        )
+        .unwrap();
+        assert_eq!(offenses.len(), 5);
+        assert!(offenses.iter().all(|offense| {
+            offense
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.source_path.as_deref())
+                == Some("/var/log/auth.log")
+        }));
+    }
+
+    #[tokio::test]
     async fn test_orchestrator_reports_file_integrity_drift() {
         let dir = tempfile::tempdir().unwrap();
         let monitored = dir.path().join("app.env");
@@ -775,8 +927,12 @@ mod tests {
             "Failed password for root from 95.163.183.214 port 2222 ssh2",
             AnomalySeverity::High,
         );
+        let source = test_log_source();
 
-        orchestrator.apply_ip_ban(&summary, &engine).await.unwrap();
+        orchestrator
+            .apply_ip_ban(&[], &source, &summary, &engine)
+            .await
+            .unwrap();
 
         let offenses = find_recent_offenses(
             &orchestrator.pool,
@@ -816,9 +972,15 @@ mod tests {
             "Failed password for root from 95.163.183.215 port 3333 ssh2",
             AnomalySeverity::Critical,
         );
+        let source = test_log_source();
 
-        orchestrator.apply_ip_ban(&summary, &engine).await.unwrap();
-        let second_attempt = orchestrator.apply_ip_ban(&summary, &engine).await;
+        orchestrator
+            .apply_ip_ban(&[], &source, &summary, &engine)
+            .await
+            .unwrap();
+        let second_attempt = orchestrator
+            .apply_ip_ban(&[], &source, &summary, &engine)
+            .await;
 
         #[cfg(target_os = "linux")]
         if !running_as_root() {
@@ -881,8 +1043,12 @@ mod tests {
             AnomalySeverity::High,
             Some("secrets.log-leakage"),
         );
+        let source = test_log_source();
 
-        orchestrator.apply_ip_ban(&summary, &engine).await.unwrap();
+        orchestrator
+            .apply_ip_ban(&[], &source, &summary, &engine)
+            .await
+            .unwrap();
 
         let offenses = find_recent_offenses(
             &orchestrator.pool,
@@ -911,8 +1077,12 @@ mod tests {
             "Failed password for root from 127.0.0.1 port 2222 ssh2",
             AnomalySeverity::High,
         );
+        let source = test_log_source();
 
-        orchestrator.apply_ip_ban(&summary, &engine).await.unwrap();
+        orchestrator
+            .apply_ip_ban(&[], &source, &summary, &engine)
+            .await
+            .unwrap();
 
         let offenses = find_recent_offenses(
             &orchestrator.pool,

@@ -3,7 +3,7 @@
 //! Manages iptables firewall rules (fallback when nftables unavailable)
 
 use anyhow::{Context, Result};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::firewall::backend::FirewallBackend;
 
@@ -45,17 +45,55 @@ pub struct IptablesBackend {
 }
 
 impl IptablesBackend {
-    fn run_iptables(&self, args: &[&str], context: &str) -> Result<()> {
-        let output = Command::new("iptables")
+    fn run_iptables_output(&self, args: &[&str], context: &str) -> Result<Output> {
+        Command::new("iptables")
             .args(args)
             .output()
-            .context(context.to_string())?;
+            .context(context.to_string())
+    }
+
+    fn run_iptables(&self, args: &[&str], context: &str) -> Result<()> {
+        let output = self.run_iptables_output(args, context)?;
 
         if !output.status.success() {
             anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
         }
 
         Ok(())
+    }
+
+    fn input_and_forward_chains() -> [&'static str; 2] {
+        ["INPUT", "FORWARD"]
+    }
+
+    fn ip_drop_rule_exists(&self, chain: &str, ip: &str) -> Result<bool> {
+        let output = self.run_iptables_output(
+            &["-C", chain, "-s", ip, "-j", "DROP"],
+            "Failed to inspect iptables rule",
+        )?;
+        Ok(output.status.success())
+    }
+
+    fn ensure_ip_drop_rule(&self, chain: &str, ip: &str) -> Result<()> {
+        if self.ip_drop_rule_exists(chain, ip)? {
+            return Ok(());
+        }
+
+        self.run_iptables(
+            &["-I", chain, "-s", ip, "-j", "DROP"],
+            "Failed to block IP with iptables",
+        )
+    }
+
+    fn remove_ip_drop_rule(&self, chain: &str, ip: &str) -> Result<()> {
+        if !self.ip_drop_rule_exists(chain, ip)? {
+            return Ok(());
+        }
+
+        self.run_iptables(
+            &["-D", chain, "-s", ip, "-j", "DROP"],
+            "Failed to unblock IP with iptables",
+        )
     }
 
     /// Create a new iptables backend
@@ -206,17 +244,19 @@ impl FirewallBackend for IptablesBackend {
     }
 
     fn block_ip(&self, ip: &str) -> Result<()> {
-        self.run_iptables(
-            &["-I", "INPUT", "-s", ip, "-j", "DROP"],
-            "Failed to block IP with iptables",
-        )
+        for chain in Self::input_and_forward_chains() {
+            self.ensure_ip_drop_rule(chain, ip)?;
+        }
+
+        Ok(())
     }
 
     fn unblock_ip(&self, ip: &str) -> Result<()> {
-        self.run_iptables(
-            &["-D", "INPUT", "-s", ip, "-j", "DROP"],
-            "Failed to unblock IP with iptables",
-        )
+        for chain in Self::input_and_forward_chains() {
+            self.remove_ip_drop_rule(chain, ip)?;
+        }
+
+        Ok(())
     }
 
     fn block_port(&self, port: u16) -> Result<()> {
@@ -277,5 +317,13 @@ mod tests {
         let backend = IptablesBackend { available: true };
         let result = backend.block_container("container-1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_input_and_forward_chains_cover_host_and_forwarded_traffic() {
+        assert_eq!(
+            IptablesBackend::input_and_forward_chains(),
+            ["INPUT", "FORWARD"]
+        );
     }
 }

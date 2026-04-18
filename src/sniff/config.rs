@@ -90,6 +90,32 @@ pub struct SniffArgs<'a> {
 }
 
 impl SniffConfig {
+    /// Build a continuous sniff config for the `stackdog serve` background worker.
+    ///
+    /// Serve mode defaults to the local pattern analyzer so log monitoring and
+    /// IP bans still work even when no external AI backend is configured.
+    pub fn background_service() -> Self {
+        let ai_provider = env::var("STACKDOG_AI_PROVIDER").unwrap_or_else(|_| "candle".into());
+
+        Self::from_env_and_args(SniffArgs {
+            once: false,
+            consume: false,
+            output: "./stackdog-logs/",
+            sources: None,
+            interval: 30,
+            ai_provider: Some(ai_provider.as_str()),
+            ai_model: None,
+            ai_api_url: None,
+            slack_webhook: None,
+            webhook_url: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_user: None,
+            smtp_password: None,
+            email_recipients: None,
+        })
+    }
+
     /// Build config from environment variables, overridden by CLI args
     pub fn from_env_and_args(args: SniffArgs<'_>) -> Self {
         let env_sources = env::var("STACKDOG_LOG_SOURCES").unwrap_or_default();
@@ -282,6 +308,28 @@ mod tests {
         assert_eq!(config.ai_api_url, "http://localhost:11434/v1");
         assert!(config.ai_api_key.is_none());
         assert_eq!(config.ai_model, "llama3");
+    }
+
+    #[test]
+    fn test_background_service_defaults_to_pattern_analyzer() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_sniff_env();
+
+        let config = SniffConfig::background_service();
+        assert!(!config.once);
+        assert!(!config.consume);
+        assert_eq!(config.interval_secs, 30);
+        assert_eq!(config.ai_provider, AiProvider::Candle);
+    }
+
+    #[test]
+    fn test_background_service_respects_env_ai_provider() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_sniff_env();
+        env::set_var("STACKDOG_AI_PROVIDER", "openai");
+
+        let config = SniffConfig::background_service();
+        assert_eq!(config.ai_provider, AiProvider::OpenAi);
     }
 
     #[test]
