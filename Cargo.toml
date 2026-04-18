@@ -64,7 +64,7 @@ aya = "0.12"
 aya-obj = "0.1"
 
 # Firewall (Linux only)
-netlink-packet-route = "0.17"
+netlink-packet-route = "0.29"
 netlink-sys = "0.8"
 
 # ML (optional)
