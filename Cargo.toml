@@ -61,10 +61,10 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1", "to
 # eBPF (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "0.12"
-aya-obj = "0.1"
+aya-obj = "0.2"
 
 # Firewall (Linux only)
-netlink-packet-route = "0.17"
+netlink-packet-route = "0.29"
 netlink-sys = "0.8"
 
 # ML (optional)
