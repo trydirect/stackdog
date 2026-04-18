@@ -192,11 +192,7 @@ impl MailAbuseDetector {
         }
 
         state.suspicious_intervals += 1;
-        let avg_bytes_per_packet = if delta.tx_packets == 0 {
-            0
-        } else {
-            delta.tx_bytes / delta.tx_packets
-        };
+        let avg_bytes_per_packet = delta.tx_bytes.checked_div(delta.tx_packets).unwrap_or(0);
         let reason = format!(
             "possible outbound mail abuse detected for {} (image: {}) — {} tx packets / {} bytes over {}s, avg {} bytes/packet, strike {}/{}",
             info.name,

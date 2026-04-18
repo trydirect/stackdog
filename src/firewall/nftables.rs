@@ -136,7 +136,36 @@ impl NfTablesBackend {
             ],
             "Failed to ensure nftables output chain",
         );
+        let _ = self.run_nft(
+            &[
+                "add",
+                "chain",
+                &table.family,
+                &table.name,
+                "forward",
+                "{",
+                "type",
+                "filter",
+                "hook",
+                "forward",
+                "priority",
+                "0",
+                ";",
+                "policy",
+                "accept",
+                ";",
+                "}",
+            ],
+            "Failed to ensure nftables forward chain",
+        );
         Ok(())
+    }
+
+    fn input_and_forward_chains(&self) -> [NfChain; 2] {
+        [
+            NfChain::new(&self.base_table(), "input", "filter"),
+            NfChain::new(&self.base_table(), "forward", "filter"),
+        ]
     }
 
     fn delete_rule_by_handle(&self, chain: &NfChain, handle: &str) -> Result<()> {
@@ -164,6 +193,38 @@ impl NfTablesBackend {
             line.rsplit_once("# handle ")
                 .map(|(_, handle)| handle.trim().to_string())
         })
+    }
+
+    fn ensure_ip_drop_rule(&self, chain: &NfChain, ip: &str) -> Result<()> {
+        let rule_spec = format!("ip saddr {} drop", ip);
+        if Self::find_rule_handle(&self.list_rules(chain)?, &rule_spec).is_some() {
+            return Ok(());
+        }
+
+        self.run_nft(
+            &[
+                "add",
+                "rule",
+                &chain.table.family,
+                &chain.table.name,
+                &chain.name,
+                "ip",
+                "saddr",
+                ip,
+                "drop",
+            ],
+            "Failed to add nftables rule",
+        )
+    }
+
+    fn delete_ip_drop_rule_if_present(&self, chain: &NfChain, ip: &str) -> Result<()> {
+        let rule_spec = format!("ip saddr {} drop", ip);
+        if Self::find_rule_handle(&self.list_rules(chain)?, &rule_spec).is_none() {
+            return Ok(());
+        }
+
+        let rule = NfRule::new(chain, rule_spec.to_string());
+        self.delete_rule(&rule)
     }
 
     /// Create a new nftables backend
@@ -367,19 +428,18 @@ impl FirewallBackend for NfTablesBackend {
 
     fn block_ip(&self, ip: &str) -> Result<()> {
         self.ensure_filter_table()?;
-        self.run_nft(
-            &[
-                "add", "rule", "inet", "stackdog", "input", "ip", "saddr", ip, "drop",
-            ],
-            "Failed to block IP with nftables",
-        )
+        for chain in self.input_and_forward_chains() {
+            self.ensure_ip_drop_rule(&chain, ip)?;
+        }
+        Ok(())
     }
 
     fn unblock_ip(&self, ip: &str) -> Result<()> {
         self.ensure_filter_table()?;
-        let chain = NfChain::new(&self.base_table(), "input", "filter");
-        let rule = NfRule::new(&chain, format!("ip saddr {} drop", ip));
-        self.delete_rule(&rule)
+        for chain in self.input_and_forward_chains() {
+            self.delete_ip_drop_rule_if_present(&chain, ip)?;
+        }
+        Ok(())
     }
 
     fn block_port(&self, port: u16) -> Result<()> {
@@ -477,5 +537,13 @@ mod tests {
         let handle = NfTablesBackend::find_rule_handle(&rules, "ip saddr 198.51.100.9 drop");
 
         assert!(handle.is_none());
+    }
+
+    #[test]
+    fn test_input_and_forward_chains_cover_host_and_forwarded_traffic() {
+        let backend = NfTablesBackend { available: true };
+        let chains = backend.input_and_forward_chains();
+        assert_eq!(chains[0].name, "input");
+        assert_eq!(chains[1].name, "forward");
     }
 }

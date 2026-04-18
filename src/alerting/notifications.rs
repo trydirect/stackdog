@@ -20,6 +20,7 @@ pub struct NotificationConfig {
     smtp_password: Option<String>,
     webhook_url: Option<String>,
     email_recipients: Vec<String>,
+    notification_label: Option<String>,
 }
 
 impl NotificationConfig {
@@ -33,6 +34,7 @@ impl NotificationConfig {
             smtp_password: None,
             webhook_url: None,
             email_recipients: Vec::new(),
+            notification_label: None,
         }
     }
 
@@ -57,6 +59,7 @@ impl NotificationConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
+            notification_label: env::var("STACKDOG_NOTIFICATION_LABEL").ok(),
         }
     }
 
@@ -102,6 +105,12 @@ impl NotificationConfig {
         self
     }
 
+    /// Set notification label
+    pub fn with_notification_label(mut self, label: String) -> Self {
+        self.notification_label = Some(label);
+        self
+    }
+
     /// Get Slack webhook
     pub fn slack_webhook(&self) -> Option<&str> {
         self.slack_webhook.as_deref()
@@ -135,6 +144,11 @@ impl NotificationConfig {
     /// Get webhook URL
     pub fn webhook_url(&self) -> Option<&str> {
         self.webhook_url.as_deref()
+    }
+
+    /// Get notification label
+    pub fn notification_label(&self) -> Option<&str> {
+        self.notification_label.as_deref()
     }
 
     /// Return only channels that are both policy-selected and actually configured.
@@ -219,7 +233,7 @@ impl NotificationChannel {
         config: &NotificationConfig,
     ) -> Result<NotificationResult> {
         if let Some(webhook_url) = config.slack_webhook() {
-            let payload = build_slack_message(alert);
+            let payload = build_slack_message(alert, config);
             log::debug!("Sending Slack notification to webhook");
             log::trace!("Slack payload: {}", payload);
 
@@ -289,11 +303,17 @@ impl NotificationChannel {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
-                let mut message_builder = Message::builder().from(from).subject(format!(
-                    "[Stackdog][{}] {}",
-                    alert.severity(),
-                    alert.alert_type()
-                ));
+                let subject = if let Some(label) = config.notification_label() {
+                    format!(
+                        "[Stackdog][{}][{}] {}",
+                        label,
+                        alert.severity(),
+                        alert.alert_type()
+                    )
+                } else {
+                    format!("[Stackdog][{}] {}", alert.severity(), alert.alert_type())
+                };
+                let mut message_builder = Message::builder().from(from).subject(subject);
 
                 for recipient in recipients {
                     message_builder = message_builder.to(recipient);
@@ -301,8 +321,8 @@ impl NotificationChannel {
 
                 let message = message_builder.multipart(
                     MultiPart::alternative()
-                        .singlepart(SinglePart::plain(build_email_text(alert)))
-                        .singlepart(SinglePart::html(build_email_html(alert))),
+                        .singlepart(SinglePart::plain(build_email_text(alert, config)))
+                        .singlepart(SinglePart::html(build_email_html(alert, config))),
                 )?;
 
                 let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(host)?
@@ -331,7 +351,7 @@ impl NotificationChannel {
         config: &NotificationConfig,
     ) -> Result<NotificationResult> {
         if let Some(webhook_url) = config.webhook_url() {
-            let payload = build_webhook_payload(alert);
+            let payload = build_webhook_payload(alert, config);
             let client = reqwest::Client::new();
             match client
                 .post(webhook_url)
@@ -459,25 +479,30 @@ pub fn severity_to_slack_color(severity: AlertSeverity) -> &'static str {
 }
 
 /// Build Slack message payload
-pub fn build_slack_message(alert: &Alert) -> String {
+pub fn build_slack_message(alert: &Alert, config: &NotificationConfig) -> String {
+    let mut fields = vec![
+        serde_json::json!({"title": "Severity", "value": alert.severity().to_string(), "short": true}),
+        serde_json::json!({"title": "Status", "value": alert.status().to_string(), "short": true}),
+        serde_json::json!({"title": "Time", "value": alert.timestamp().to_rfc3339(), "short": true}),
+    ];
+    if let Some(label) = config.notification_label() {
+        fields.push(serde_json::json!({"title": "Instance", "value": label, "short": true}));
+    }
+
     serde_json::json!({
         "text": "🐕 Stackdog Security Alert",
         "attachments": [{
             "color": severity_to_slack_color(alert.severity()),
             "title": format!("{:?}", alert.alert_type()),
             "text": alert.message(),
-            "fields": [
-                {"title": "Severity", "value": alert.severity().to_string(), "short": true},
-                {"title": "Status", "value": alert.status().to_string(), "short": true},
-                {"title": "Time", "value": alert.timestamp().to_rfc3339(), "short": true}
-            ]
+            "fields": fields
         }]
     })
     .to_string()
 }
 
 /// Build webhook payload
-pub fn build_webhook_payload(alert: &Alert) -> String {
+pub fn build_webhook_payload(alert: &Alert, config: &NotificationConfig) -> String {
     serde_json::json!({
         "alert_type": alert.alert_type().to_string(),
         "severity": alert.severity().to_string(),
@@ -485,13 +510,18 @@ pub fn build_webhook_payload(alert: &Alert) -> String {
         "timestamp": alert.timestamp().to_rfc3339(),
         "status": alert.status().to_string(),
         "metadata": alert.metadata(),
+        "instance_label": config.notification_label(),
     })
     .to_string()
 }
 
-fn build_email_text(alert: &Alert) -> String {
+fn build_email_text(alert: &Alert, config: &NotificationConfig) -> String {
     format!(
-        "Stackdog Security Alert\n\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n\n{}\n",
+        "Stackdog Security Alert\n{}\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n\n{}\n",
+        config
+            .notification_label()
+            .map(|label| format!("Instance: {label}\n"))
+            .unwrap_or_default(),
         alert.alert_type(),
         alert.severity(),
         alert.status(),
@@ -500,9 +530,13 @@ fn build_email_text(alert: &Alert) -> String {
     )
 }
 
-fn build_email_html(alert: &Alert) -> String {
+fn build_email_html(alert: &Alert, config: &NotificationConfig) -> String {
     format!(
-        "<h2>Stackdog Security Alert</h2><p><strong>Type:</strong> {}</p><p><strong>Severity:</strong> {}</p><p><strong>Status:</strong> {}</p><p><strong>Time:</strong> {}</p><p>{}</p>",
+        "<h2>Stackdog Security Alert</h2>{}<p><strong>Type:</strong> {}</p><p><strong>Severity:</strong> {}</p><p><strong>Status:</strong> {}</p><p><strong>Time:</strong> {}</p><p>{}</p>",
+        config
+            .notification_label()
+            .map(|label| format!("<p><strong>Instance:</strong> {label}</p>"))
+            .unwrap_or_default(),
         alert.alert_type(),
         alert.severity(),
         alert.status(),
@@ -526,6 +560,7 @@ mod tests {
         env::remove_var("STACKDOG_SMTP_USER");
         env::remove_var("STACKDOG_SMTP_PASSWORD");
         env::remove_var("STACKDOG_EMAIL_RECIPIENTS");
+        env::remove_var("STACKDOG_NOTIFICATION_LABEL");
         env::remove_var("STACKDOG_NOTIFY_IP_BAN_ACTIONS");
         env::remove_var("STACKDOG_NOTIFY_QUARANTINE_ACTIONS");
     }
@@ -561,6 +596,7 @@ mod tests {
             "STACKDOG_EMAIL_RECIPIENTS",
             "soc@example.com,oncall@example.com",
         );
+        env::set_var("STACKDOG_NOTIFICATION_LABEL", "prod-eu-1");
 
         let config = NotificationConfig::from_env();
 
@@ -580,6 +616,7 @@ mod tests {
                 "oncall@example.com".to_string()
             ]
         );
+        assert_eq!(config.notification_label(), Some("prod-eu-1"));
 
         clear_notification_env();
     }
@@ -621,10 +658,33 @@ mod tests {
             "Webhook test".to_string(),
         );
 
-        let payload = build_webhook_payload(&alert);
+        let payload = build_webhook_payload(
+            &alert,
+            &NotificationConfig::default().with_notification_label("prod-eu-1".into()),
+        );
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["severity"], "High");
         assert_eq!(json["message"], "Webhook test");
+        assert_eq!(json["instance_label"], "prod-eu-1");
+    }
+
+    #[test]
+    fn test_build_slack_message_includes_instance_label() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default().with_notification_label("prod-eu-1".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+        assert!(fields
+            .iter()
+            .any(|field| { field["title"] == "Instance" && field["value"] == "prod-eu-1" }));
     }
 
     #[tokio::test]

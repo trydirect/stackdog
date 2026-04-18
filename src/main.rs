@@ -11,7 +11,7 @@ extern crate serde_json;
 extern crate actix_cors;
 extern crate actix_rt;
 extern crate actix_web;
-extern crate dotenv;
+extern crate dotenvy;
 extern crate env_logger;
 extern crate tracing;
 extern crate tracing_subscriber;
@@ -32,7 +32,7 @@ use tracing_subscriber::FmtSubscriber;
 #[actix_rt::main]
 async fn main() -> io::Result<()> {
     // Load environment
-    if let Err(err) = dotenv::dotenv() {
+    if let Err(err) = dotenvy::dotenv() {
         eprintln!(
             "Warning: could not load .env file ({}). Continuing with existing environment.",
             err
@@ -147,6 +147,17 @@ async fn run_serve() -> io::Result<()> {
         info!("IP ban backend disabled");
     }
 
+    if parse_bool_env("STACKDOG_SERVE_SNIFF_ENABLED", true) {
+        let sniff_config = sniff::config::SniffConfig::background_service();
+        actix_rt::spawn(async move {
+            if let Err(err) = run_sniff(sniff_config).await {
+                log::error!("Background sniff loop exited: {}", err);
+            }
+        });
+    } else {
+        info!("Background sniff disabled");
+    }
+
     info!("🎉 Stackdog Security ready!");
     info!("");
     info!("API Endpoints:");
@@ -231,4 +242,15 @@ async fn run_sniff(config: sniff::config::SniffConfig) -> io::Result<()> {
     let orchestrator = sniff::SniffOrchestrator::new(config).map_err(io::Error::other)?;
 
     orchestrator.run().await.map_err(io::Error::other)
+}
+
+fn parse_bool_env(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
 }

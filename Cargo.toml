@@ -25,8 +25,8 @@ uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 tracing = "0.1"
-tracing-subscriber = "0.3"
-dotenv = "0.15"
+tracing-subscriber = "0.3.23"
+dotenvy = "0.15.7"
 anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
@@ -48,7 +48,7 @@ r2d2 = "0.8"
 bollard = "0.16"
 
 # HTTP client (for LLM API)
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 sha2 = "0.10"
 
 # Compression
@@ -61,10 +61,10 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1", "to
 # eBPF (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "0.12"
-aya-obj = "0.1"
+aya-obj = "0.2"
 
 # Firewall (Linux only)
-netlink-packet-route = "0.17"
+netlink-packet-route = "0.29"
 netlink-sys = "0.8"
 
 # ML (optional)
