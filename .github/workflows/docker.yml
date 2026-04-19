@@ -43,6 +43,7 @@ jobs:
       - name: Build static release
         env:
           CARGO_TARGET_DIR: target-cross
+          STACKDOG_GIT_HASH: ${{ github.sha }}
         run: cross build --release --target x86_64-unknown-linux-musl
 
       - name: Build frontend
@@ -98,4 +99,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: trydirect/stackdog:latest
+          tags: |
+            vsilent/stackdog:latest
+            vsilent/stackdog:${{ github.sha }}
