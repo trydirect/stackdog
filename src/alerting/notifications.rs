@@ -11,7 +11,7 @@ use std::env;
 use crate::alerting::alert::{Alert, AlertSeverity};
 
 /// Notification configuration
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NotificationConfig {
     slack_webhook: Option<String>,
     smtp_host: Option<String>,
@@ -21,6 +21,7 @@ pub struct NotificationConfig {
     webhook_url: Option<String>,
     email_recipients: Vec<String>,
     notification_label: Option<String>,
+    minimum_severity: AlertSeverity,
 }
 
 impl NotificationConfig {
@@ -35,6 +36,7 @@ impl NotificationConfig {
             webhook_url: None,
             email_recipients: Vec::new(),
             notification_label: None,
+            minimum_severity: AlertSeverity::Info,
         }
     }
 
@@ -60,6 +62,10 @@ impl NotificationConfig {
                 })
                 .unwrap_or_default(),
             notification_label: env::var("STACKDOG_NOTIFICATION_LABEL").ok(),
+            minimum_severity: env::var("STACKDOG_NOTIFICATION_MIN_SEVERITY")
+                .ok()
+                .and_then(|value| parse_alert_severity(&value))
+                .unwrap_or(AlertSeverity::Info),
         }
     }
 
@@ -111,6 +117,12 @@ impl NotificationConfig {
         self
     }
 
+    /// Set minimum severity for non-action notifications
+    pub fn with_minimum_severity(mut self, severity: AlertSeverity) -> Self {
+        self.minimum_severity = severity;
+        self
+    }
+
     /// Get Slack webhook
     pub fn slack_webhook(&self) -> Option<&str> {
         self.slack_webhook.as_deref()
@@ -151,6 +163,11 @@ impl NotificationConfig {
         self.notification_label.as_deref()
     }
 
+    /// Get minimum severity for non-action notifications
+    pub fn minimum_severity(&self) -> AlertSeverity {
+        self.minimum_severity
+    }
+
     /// Return only channels that are both policy-selected and actually configured.
     pub fn configured_channels_for_severity(
         &self,
@@ -160,6 +177,33 @@ impl NotificationConfig {
             .into_iter()
             .filter(|channel| self.supports_channel(channel))
             .collect()
+    }
+
+    pub fn configured_channels_for_stored_alert(
+        &self,
+        alert: &crate::database::models::Alert,
+    ) -> Vec<NotificationChannel> {
+        if is_action_alert(alert) {
+            return self.configured_action_channels();
+        }
+
+        if alert.severity < self.minimum_severity {
+            return Vec::new();
+        }
+
+        self.configured_channels_for_severity(alert.severity)
+    }
+
+    fn configured_action_channels(&self) -> Vec<NotificationChannel> {
+        [
+            NotificationChannel::Console,
+            NotificationChannel::Slack,
+            NotificationChannel::Email,
+            NotificationChannel::Webhook,
+        ]
+        .into_iter()
+        .filter(|channel| self.supports_channel(channel))
+        .collect()
     }
 
     fn supports_channel(&self, channel: &NotificationChannel) -> bool {
@@ -178,6 +222,12 @@ impl NotificationConfig {
     }
 }
 
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn env_flag_enabled(name: &str, default: bool) -> bool {
     env::var(name)
         .ok()
@@ -187,6 +237,29 @@ pub fn env_flag_enabled(name: &str, default: bool) -> bool {
             _ => None,
         })
         .unwrap_or(default)
+}
+
+fn parse_alert_severity(value: &str) -> Option<AlertSeverity> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "info" => Some(AlertSeverity::Info),
+        "low" => Some(AlertSeverity::Low),
+        "medium" => Some(AlertSeverity::Medium),
+        "high" => Some(AlertSeverity::High),
+        "critical" => Some(AlertSeverity::Critical),
+        _ => None,
+    }
+}
+
+fn is_action_alert(alert: &crate::database::models::Alert) -> bool {
+    matches!(
+        alert.alert_type,
+        crate::alerting::alert::AlertType::QuarantineApplied
+    ) || alert
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.source.as_deref())
+        .map(|source| matches!(source, "ip_ban" | "quarantine"))
+        .unwrap_or(false)
 }
 
 /// Notification channel
@@ -406,7 +479,7 @@ pub async fn dispatch_stored_alert(
         }
     }
 
-    let channels = config.configured_channels_for_severity(alert.severity);
+    let channels = config.configured_channels_for_stored_alert(alert);
     let mut sent = 0;
     for channel in &channels {
         match channel.send(&runtime_alert, config).await? {
@@ -561,6 +634,7 @@ mod tests {
         env::remove_var("STACKDOG_SMTP_PASSWORD");
         env::remove_var("STACKDOG_EMAIL_RECIPIENTS");
         env::remove_var("STACKDOG_NOTIFICATION_LABEL");
+        env::remove_var("STACKDOG_NOTIFICATION_MIN_SEVERITY");
         env::remove_var("STACKDOG_NOTIFY_IP_BAN_ACTIONS");
         env::remove_var("STACKDOG_NOTIFY_QUARANTINE_ACTIONS");
     }
@@ -617,6 +691,19 @@ mod tests {
             ]
         );
         assert_eq!(config.notification_label(), Some("prod-eu-1"));
+        assert_eq!(config.minimum_severity(), AlertSeverity::Info);
+
+        clear_notification_env();
+    }
+
+    #[test]
+    fn test_notification_config_from_env_reads_minimum_severity() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+        env::set_var("STACKDOG_NOTIFICATION_MIN_SEVERITY", "critical");
+
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.minimum_severity(), AlertSeverity::Critical);
 
         clear_notification_env();
     }
@@ -648,6 +735,38 @@ mod tests {
 
         let info_routes = route_by_severity(AlertSeverity::Info);
         assert_eq!(info_routes.len(), 1);
+    }
+
+    #[test]
+    fn test_configured_channels_for_stored_alert_filters_non_action_below_threshold() {
+        let config = NotificationConfig::default()
+            .with_slack_webhook("https://hooks.slack.test/services/1".into())
+            .with_minimum_severity(AlertSeverity::Critical);
+        let alert = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "High severity finding".to_string(),
+        );
+
+        let channels = config.configured_channels_for_stored_alert(&alert);
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn test_configured_channels_for_stored_alert_keeps_action_notifications() {
+        let config = NotificationConfig::default()
+            .with_slack_webhook("https://hooks.slack.test/services/1".into())
+            .with_minimum_severity(AlertSeverity::Critical);
+        let alert = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::SystemEvent,
+            AlertSeverity::Info,
+            "Released IP ban".to_string(),
+        )
+        .with_metadata(crate::database::models::AlertMetadata::default().with_source("ip_ban"));
+
+        let channels = config.configured_channels_for_stored_alert(&alert);
+        assert!(channels.contains(&NotificationChannel::Console));
+        assert!(channels.contains(&NotificationChannel::Slack));
     }
 
     #[test]

@@ -52,6 +52,7 @@ impl ContainerManager {
         .with_metadata(
             AlertMetadata::default()
                 .with_container_id(container_id)
+                .with_source("quarantine")
                 .with_reason(reason),
         );
 
@@ -78,6 +79,7 @@ impl ContainerManager {
         .with_metadata(
             AlertMetadata::default()
                 .with_container_id(container_id)
+                .with_source("quarantine")
                 .with_reason("Container released from quarantine"),
         );
         let stored_alert = create_alert(&self.pool, alert).await?;
