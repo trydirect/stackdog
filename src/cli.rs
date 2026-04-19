@@ -5,9 +5,16 @@
 
 use clap::{Args, Parser, Subcommand};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("STACKDOG_GIT_HASH"),
+    ")"
+);
+
 /// Stackdog Security — Docker & Linux server security platform
 #[derive(Parser, Debug)]
-#[command(name = "stackdog", version, about, long_about = None)]
+#[command(name = "stackdog", version = VERSION, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
