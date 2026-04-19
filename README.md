@@ -235,7 +235,7 @@ docker compose -f docker-compose.app.yml up --build
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Stackdog Security Core                       │
+│                     Stackdog Security Core                      │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
 │  │  Collectors │  │   ML/AI     │  │   Response Engine       │  │
@@ -245,12 +245,12 @@ docker compose -f docker-compose.app.yml up --build
 │  │ • Docker    │  │   Detection │  │ • Auto-response         │  │
 │  │   Events    │  │ • Scoring   │  │ • Alerting              │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────┐│
-│  │  Log Sniffing                                               ││
-│  │  • Auto-discovery (system logs, Docker, custom paths)       ││
-│  │  • AI summarization (OpenAI/Ollama/Candle)                  ││
-│  │  • zstd compression, dedup, log purge                       ││
-│  └──────────────────────────────────────────────────────────────┘│
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Log Sniffing                                             │  │
+│  │  • Auto-discovery (system logs, Docker, custom paths)     │  │
+│  │  • AI summarization (OpenAI/Ollama/Candle)                │  │
+│  │  • zstd compression, dedup, log purge                     │  │
+│  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -732,7 +732,6 @@ copies of the Software...
 
 ### Inspired By
 
-- [Portainer](https://github.com/portainer/portainer) - Docker management UI
 - [Falco](https://github.com/falcosecurity/falco) - Cloud-native runtime security
 - [Sysdig](https://github.com/draios/sysdig) - System visibility
 
@@ -750,12 +749,11 @@ copies of the Software...
 
 - **Project Lead:** Vasili Pascal
 - **Email:** info@try.direct
-- **Twitter:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
-- **Gitter:** [stackdog/community](https://gitter.im/stackdog/community)
+- **X:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
 - **GitHub:** [vsilent/stackdog](https://github.com/vsilent/stackdog)
 
 ---
 
 <p align="center">
-<strong>🐕 Built with ❤️ using Rust</strong>
+<strong>Built with ❤️ using Rust</strong>
 </p>
