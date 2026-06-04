@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-slate-950 font-sans text-slate-100 antialiased;
+  }
+
+  * {
+    @apply border-slate-800;
+  }
+
+  a {
+    @apply transition-colors;
+  }
+
+  ::selection {
+    @apply bg-cyan-500/30 text-white;
+  }
+
+  pre {
+    @apply overflow-x-auto rounded-2xl border border-slate-800 bg-[#0d1117] p-4 text-sm leading-6 text-slate-100;
+  }
+
+  code {
+    @apply rounded bg-slate-800/80 px-1.5 py-0.5 text-cyan-200;
+  }
+
+  pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+}
+
+@layer components {
+  .site-container {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .section-shell {
+    @apply py-16 sm:py-20;
+  }
+
+  .panel {
+    @apply rounded-2xl border border-slate-800 bg-slate-900/70 shadow-2xl shadow-slate-950/30 backdrop-blur;
+  }
+
+  .eyebrow {
+    @apply inline-flex items-center rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300;
+  }
+
+  .section-heading {
+    @apply text-3xl font-semibold tracking-tight text-white sm:text-4xl;
+  }
+
+  .section-copy {
+    @apply mt-4 max-w-3xl text-base text-slate-400 sm:text-lg;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .bg-grid {
+    background-image: radial-gradient(circle at center, rgba(6, 182, 212, 0.18) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+}
