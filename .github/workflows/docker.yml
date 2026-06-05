@@ -100,5 +100,5 @@ jobs:
           context: .
           push: true
           tags: |
-            vsilent/stackdog:latest
-            vsilent/stackdog:${{ github.sha }}
+            trydirect/stackdog:latest
+            trydirect/stackdog:${{ github.sha }}
