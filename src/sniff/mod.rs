@@ -442,7 +442,7 @@ pub struct SniffPassResult {
 
 fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
     if let Some(detector_id) = anomaly.detector_id.as_deref() {
-        if matches!(detector_id, "web.login-bruteforce" | "web.path-traversal") {
+        if matches!(detector_id, "web.login-bruteforce" | "web.path-traversal" | "web.archive-probe") {
             return true;
         }
     }

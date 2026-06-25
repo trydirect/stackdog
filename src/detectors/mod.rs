@@ -121,6 +121,7 @@ impl DetectorRegistry {
         self.register(SsrfMetadataDetector);
         self.register(ExfiltrationChainDetector);
         self.register(SecretLeakageDetector);
+        self.register(WebArchiveProbeDetector);
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {
@@ -203,6 +204,7 @@ struct SensitiveFileAccessDetector;
 struct SsrfMetadataDetector;
 struct ExfiltrationChainDetector;
 struct SecretLeakageDetector;
+struct WebArchiveProbeDetector;
 
 impl LogDetector for SqlInjectionProbeDetector {
     fn id(&self) -> &'static str {
@@ -635,6 +637,50 @@ impl LogDetector for SecretLeakageDetector {
             ),
             severity: threshold_severity(matches.len(), 1, 2),
             confidence: 92,
+            sample_line: matches[0].line.clone(),
+        }]
+    }
+}
+
+impl LogDetector for WebArchiveProbeDetector {
+    fn id(&self) -> &'static str {
+        "web.archive-probe"
+    }
+
+    fn family(&self) -> DetectorFamily {
+        DetectorFamily::Web
+    }
+
+    fn detect(&self, entries: &[LogEntry]) -> Vec<DetectorFinding> {
+        let matches = matching_entries(
+            entries,
+            &[
+                ".zip",
+                ".tar.gz",
+                ".tgz",
+                ".sql",
+                ".7z",
+                ".rar",
+                ".tar.bz2",
+                ".tar.xz",
+                ".dump",
+                ".bak",
+            ],
+        );
+
+        if matches.len() < 3 {
+            return Vec::new();
+        }
+
+        vec![DetectorFinding {
+            detector_id: self.id().to_string(),
+            family: self.family(),
+            description: format!(
+                "Suspicious archive/backup file probing detected in {} HTTP requests",
+                matches.len()
+            ),
+            severity: threshold_severity(matches.len(), 3, 8),
+            confidence: 82,
             sample_line: matches[0].line.clone(),
         }]
     }
