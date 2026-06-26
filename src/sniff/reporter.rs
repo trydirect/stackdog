@@ -106,7 +106,10 @@ impl Reporter {
                 .await?;
             }
 
-            // Route to appropriate notification channels
+            // Route to appropriate notification channels (respecting minimum severity)
+            if alert_severity < self.notification_config.minimum_severity() {
+                continue;
+            }
             let channels = self
                 .notification_config
                 .configured_channels_for_severity(alert_severity);
