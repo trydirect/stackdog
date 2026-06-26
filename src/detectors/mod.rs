@@ -655,15 +655,7 @@ impl LogDetector for WebArchiveProbeDetector {
         let matches = matching_entries(
             entries,
             &[
-                ".zip",
-                ".tar.gz",
-                ".tgz",
-                ".sql",
-                ".7z",
-                ".rar",
-                ".tar.bz2",
-                ".tar.xz",
-                ".dump",
+                ".zip", ".tar.gz", ".tgz", ".sql", ".7z", ".rar", ".tar.bz2", ".tar.xz", ".dump",
                 ".bak",
             ],
         );
