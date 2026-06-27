@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { getSiteUrl } from '@/lib/config';
 
 const topics = [
   'General Inquiry',
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
             elements: [
               {
                 type: 'mrkdwn',
-                text: `Submitted at ${timestamp} from stackdog.io`
+                text: `Submitted at ${timestamp} from ${getSiteUrl()}`
               }
             ]
           }

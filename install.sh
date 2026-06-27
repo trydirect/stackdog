@@ -155,6 +155,11 @@ main() {
   echo ""
   echo "  Run:  stackdog --help"
   echo ""
+  echo "  Prerequisites for IP banning (optional):"
+  echo "    - nftables or iptables must be installed"
+  echo "    - The binary requires root or CAP_NET_ADMIN to manage firewall rules"
+  echo "    - See https://stackdog.stacker.my/docs for full setup guide"
+  echo ""
 }
 
 main "$@"

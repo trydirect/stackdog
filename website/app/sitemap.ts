@@ -1,7 +1,8 @@
 import type { MetadataRoute } from 'next';
+import { getSiteUrl } from '@/lib/config';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const siteUrl = 'https://stackdog.io';
+  const siteUrl = getSiteUrl();
   const lastModified = new Date();
 
   return [

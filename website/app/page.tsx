@@ -15,6 +15,7 @@ import {
   Zap
 } from 'lucide-react';
 import CopyButton from '@/components/CopyButton';
+import { getSiteUrl } from '@/lib/config';
 import { buildHomeStructuredData, toJsonLd } from '@/lib/structured-data';
 
 const installCommand =
@@ -158,7 +159,7 @@ export const metadata: Metadata = {
     title: 'AI-Powered Security for Docker Containers & Linux Servers',
     description:
       'Real-time threat detection with eBPF monitoring, AI-assisted investigation, and automated containment for Docker and Linux workloads.',
-    url: 'https://stackdog.io/'
+    url: getSiteUrl() + '/'
   },
   twitter: {
     title: 'AI-Powered Security for Docker Containers & Linux Servers',

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { ArrowUpRight, ExternalLink } from 'lucide-react';
 import CopyButton from '@/components/CopyButton';
+import { getSiteUrl } from '@/lib/config';
 import { buildDocsStructuredData, toJsonLd } from '@/lib/structured-data';
 
 const installCurl =
@@ -10,7 +11,8 @@ const installPinned =
   'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.2';
 const installDocker = `docker run --rm -it \\
   --name stackdog \\
-  -p 5000:5000 \\
+  --network host \\
+  --cap-add=NET_ADMIN \\
   -e APP_HOST=0.0.0.0 \\
   -e APP_PORT=5000 \\
   -e DATABASE_URL=/data/stackdog.db \\
@@ -67,7 +69,13 @@ const envRows = [
   ['STACKDOG_AI_API_URL', 'http://localhost:11434/v1', 'API URL for OpenAI-compatible providers such as Ollama.'],
   ['STACKDOG_AI_MODEL', 'llama3', 'Model name for AI-assisted summarization.'],
   ['STACKDOG_SLACK_WEBHOOK_URL', 'https://hooks.slack.com/...', 'Slack alert destination.'],
-  ['STACKDOG_WEBHOOK_URL', 'https://example.com/webhook', 'Generic webhook target.']
+  ['STACKDOG_WEBHOOK_URL', 'https://example.com/webhook', 'Generic webhook target.'],
+  ['STACKDOG_IP_BAN_ENABLED', 'true', 'Enable automatic IP banning via iptables/nftables.'],
+  ['STACKDOG_IP_BAN_MAX_RETRIES', '5', 'Offense count before an IP is banned.'],
+  ['STACKDOG_IP_BAN_BAN_TIME_SECS', '1800', 'How long (seconds) an IP stays banned. Default 30 min.'],
+  ['STACKDOG_IP_BAN_FIND_TIME_SECS', '300', 'Lookback window (seconds) for counting offenses.'],
+  ['STACKDOG_NOTIFICATION_MIN_SEVERITY', 'info', 'Minimum severity for alert notifications. Options: info, low, medium, high, critical.'],
+  ['STACKDOG_NOTIFY_IP_BAN_ACTIONS', 'true', 'Send notifications when an IP is banned or released.']
 ] as const;
 
 export const metadata: Metadata = {
@@ -82,7 +90,7 @@ export const metadata: Metadata = {
     title: 'Stackdog Security Docs',
     description:
       'Install Stackdog, run the CLI, integrate the API, and configure alerting and AI analysis.',
-    url: 'https://stackdog.io/docs'
+    url: getSiteUrl() + '/docs'
   },
   twitter: {
     title: 'Stackdog Security Docs',
@@ -153,7 +161,7 @@ export default function DocsPage() {
               title: 'Stackdog Security Documentation',
               description:
                 'CLI, API, configuration, and installation documentation for Stackdog Security.',
-              url: 'https://stackdog.io/docs'
+              url: getSiteUrl() + '/docs'
             })
           )
         }}

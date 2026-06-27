@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import type { ReactNode } from 'react';
+import { getSiteUrl } from '@/lib/config';
 import Footer from '@/components/Footer';
 import Navbar from '@/components/Navbar';
 import './globals.css';
@@ -15,7 +16,7 @@ const defaultDescription =
   'Stackdog Security is a Rust-based security platform for Docker containers and Linux servers with eBPF monitoring, AI-assisted log analysis, threat scoring, and automated response.';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://stackdog.io'),
+  metadataBase: new URL(getSiteUrl()),
   title: {
     default: 'Stackdog Security',
     template: '%s | Stackdog Security'
@@ -40,7 +41,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: 'website',
     locale: 'en_US',
-    url: 'https://stackdog.io',
+    url: getSiteUrl(),
     siteName: 'Stackdog Security',
     title: 'Stackdog Security',
     description: defaultDescription

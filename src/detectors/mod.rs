@@ -6,6 +6,7 @@
 
 mod audits;
 mod integrity;
+mod ml;
 
 use std::collections::HashSet;
 
@@ -16,6 +17,7 @@ pub use self::audits::ContainerPosture;
 
 use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInventoryMonitor};
 use self::integrity::FileIntegrityMonitor;
+use self::ml::MlBehavioralDetector;
 use crate::database::connection::DbPool;
 use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly};
 use crate::sniff::reader::LogEntry;
@@ -122,6 +124,7 @@ impl DetectorRegistry {
         self.register(ExfiltrationChainDetector);
         self.register(SecretLeakageDetector);
         self.register(WebArchiveProbeDetector);
+        self.register(MlBehavioralDetector::new());
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {

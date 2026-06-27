@@ -83,7 +83,8 @@ docker volume create stackdog-data
 
 docker run --rm -it \
   --name stackdog \
-  -p 5000:5000 \
+  --network host \
+  --cap-add=NET_ADMIN \
   -e APP_HOST=0.0.0.0 \
   -e APP_PORT=5000 \
   -e DATABASE_URL=/data/stackdog.db \
@@ -91,6 +92,8 @@ docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
   trydirect/stackdog:latest
 ```
+
+> **Note:** `--network host` and `--cap-add=NET_ADMIN` are required for IP banning (iptables/nftables) to work. Without them, firewall rules from inside the container cannot affect host traffic.
 
 Then open another shell and hit the API:
 
@@ -127,7 +130,8 @@ docker build -f docker/backend/Dockerfile -t stackdog-local .
 
 docker run --rm -it \
   --name stackdog-local \
-  -p 5000:5000 \
+  --network host \
+  --cap-add=NET_ADMIN \
   -e APP_HOST=0.0.0.0 \
   -e APP_PORT=5000 \
   -e DATABASE_URL=/data/stackdog.db \
@@ -151,9 +155,11 @@ This starts:
 
 The compose stack uses:
 
-- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, and mounts `/var/run/docker.sock`
+- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, mounts `/var/run/docker.sock`, uses `network_mode: host`, and adds `NET_ADMIN` capability for IP banning
 - `stackdog-ui` service — builds the React app and serves it with Nginx
 - `stackdog-data` volume — persists the SQLite database between restarts
+
+> **Prerequisite for IP banning:** The `network_mode: host` and `cap_add: NET_ADMIN` settings are required so that `iptables`/`nftables` rules applied inside the container affect the host's network stack. Without them, IP ban firewall rules cannot reach host traffic.
 
 To stop it:
 

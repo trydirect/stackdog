@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Code2, Mail, ShieldCheck } from 'lucide-react';
+import { getSiteUrl } from '@/lib/config';
 
 function DiscordIcon({ className }: { className?: string }) {
   return (
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
     title: 'Contact Stackdog Security',
     description:
       'Reach the Stackdog team for demos, enterprise evaluations, and responsible security disclosures.',
-    url: 'https://stackdog.io/contact'
+    url: getSiteUrl() + '/contact'
   },
   twitter: {
     title: 'Contact Stackdog Security',

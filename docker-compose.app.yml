@@ -5,12 +5,14 @@ services:
       dockerfile: docker/backend/Dockerfile
     command: ["serve"]
     container_name: stackdog
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 5000
       DATABASE_URL: /data/stackdog.db
-    ports:
-      - "5000:5000"
+      STACKDOG_SNIFF_INTERVAL: 30
     volumes:
       - stackdog-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

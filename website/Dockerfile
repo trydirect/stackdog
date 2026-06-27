@@ -19,6 +19,9 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
+ARG SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=$SITE_URL
+
 RUN npm run build
 
 ########################################

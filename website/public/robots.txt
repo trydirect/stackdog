@@ -1,3 +1,0 @@
-User-agent: *
-Allow: /
-Sitemap: https://stackdog.io/sitemap.xml

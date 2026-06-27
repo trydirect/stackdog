@@ -1,3 +1,5 @@
+import { getSiteUrl } from '@/lib/config';
+
 export interface FaqEntry {
   question: string;
   answer: string;
@@ -9,7 +11,7 @@ interface TechArticleInput {
   url: string;
 }
 
-const SITE_URL = 'https://stackdog.io';
+const SITE_URL = getSiteUrl();
 const GITHUB_URL = 'https://github.com/trydirect/stackdog';
 
 export function buildHomeStructuredData(faqEntries: FaqEntry[]) {
