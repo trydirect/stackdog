@@ -306,7 +306,7 @@ This release was made possible by contributions from:
 
 ## Links
 
-- **GitHub:** https://github.com/vsilent/stackdog
+- **GitHub:** https://github.com/trydirect/stackdog
 - **Documentation:** See docs/ directory
-- **Issues:** https://github.com/vsilent/stackdog/issues
-- **Discussions:** https://github.com/vsilent/stackdog/discussions
+- **Issues:** https://github.com/trydirect/stackdog/issues
+- **Discussions:** https://github.com/trydirect/stackdog/discussions

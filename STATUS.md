@@ -347,7 +347,7 @@ All Phase 1 tasks are now complete. The foundation for Stackdog Security is read
 
 - **Project Lead:** Vasili Pascal
 - **Email:** info@try.direct
-- **GitHub:** https://github.com/vsilent/stackdog
+- **GitHub:** https://github.com/trydirect/stackdog
 - **Gitter:** https://gitter.im/stackdog/community
 
 ---

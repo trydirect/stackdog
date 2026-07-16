@@ -597,7 +597,7 @@ cargo-deny = "0.14"
 
 ```bash
 # Clone repository
-git clone https://github.com/vsilent/stackdog
+git clone https://github.com/trydirect/stackdog
 cd stackdog
 
 # Install Rust (if not installed)
