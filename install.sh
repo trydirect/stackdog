@@ -2,15 +2,15 @@
 # Stackdog Security — install script
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/vsilent/stackdog/main/install.sh | sudo bash
-#   curl -fsSL https://raw.githubusercontent.com/vsilent/stackdog/main/install.sh | sudo bash -s -- --version v0.2.2
+#   curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.2
 #
 # Installs the stackdog binary to /usr/local/bin.
 # Requires: curl, tar, sha256sum (or shasum), Linux x86_64 or aarch64.
 
 set -eu
 
-REPO="vsilent/stackdog"
+REPO="trydirect/stackdog"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="stackdog"
 

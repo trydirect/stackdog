@@ -756,7 +756,7 @@ copies of the Software...
 - **Project Lead:** Vasili Pascal
 - **Email:** info@try.direct
 - **X:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
-- **GitHub:** [vsilent/stackdog](https://github.com/vsilent/stackdog)
+- **GitHub:** [trydirect/stackdog](https://github.com/trydirect/stackdog)
 
 ---
 

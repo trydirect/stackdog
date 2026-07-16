@@ -48,7 +48,7 @@ This document provides an index of all Stackdog Security documentation.
 | Document | Purpose | For |
 |----------|---------|-----|
 | [BUGS.md](../BUGS.md) | Bug tracking & reporting | Users/Dev |
-| [GitHub Issues](https://github.com/vsilent/stackdog/issues) | Issue tracker | Everyone |
+| [GitHub Issues](https://github.com/trydirect/stackdog/issues) | Issue tracker | Everyone |
 | [Gitter](https://gitter.im/stackdog/community) | Community chat | Everyone |
 
 ---
@@ -153,7 +153,7 @@ This document provides an index of all Stackdog Security documentation.
 ## 📞 Need Help?
 
 1. **Check documentation** - Start with this index
-2. **Search issues** - https://github.com/vsilent/stackdog/issues
+2. **Search issues** - https://github.com/trydirect/stackdog/issues
 3. **Ask on Gitter** - https://gitter.im/stackdog/community
 4. **Create issue** - If documentation is missing
 

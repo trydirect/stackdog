@@ -74,7 +74,7 @@ stackdog/
 
 ```bash
 # Clone and setup
-git clone https://github.com/vsilent/stackdog
+git clone https://github.com/trydirect/stackdog
 cd stackdog
 
 # Environment setup
