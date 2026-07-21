@@ -161,9 +161,7 @@ impl LogDetector for MlBehavioralDetector {
             .iter()
             .find(|e| {
                 let lower = e.line.to_ascii_lowercase();
-                lower.contains("error")
-                    || lower.contains("fatal")
-                    || lower.contains("panic")
+                lower.contains("error") || lower.contains("fatal") || lower.contains("panic")
             })
             .map(|e| e.line.clone())
             .unwrap_or_else(|| entries[0].line.clone());
@@ -280,7 +278,8 @@ mod tests {
         assert!(detector.is_trained());
 
         let model = detector.model.lock().unwrap();
-        let normal_score = model.score_array(&MlBehavioralDetector::extract_features(&normal_batch()));
+        let normal_score =
+            model.score_array(&MlBehavioralDetector::extract_features(&normal_batch()));
         let anomaly_score =
             model.score_array(&MlBehavioralDetector::extract_features(&error_spike_batch()));
         assert!(
@@ -321,7 +320,8 @@ mod tests {
         let _findings = detector.detect(&extreme_batch);
         let model = detector.model.lock().unwrap();
         let score = model.score_array(&MlBehavioralDetector::extract_features(&extreme_batch));
-        let normal_score = model.score_array(&MlBehavioralDetector::extract_features(&normal_batch()));
+        let normal_score =
+            model.score_array(&MlBehavioralDetector::extract_features(&normal_batch()));
         assert!(
             score >= normal_score,
             "extreme score {} should >= normal score {}",
