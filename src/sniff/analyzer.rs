@@ -91,12 +91,25 @@ impl OpenAiAnalyzer {
         }
     }
 
-    pub fn new(api_url: String, api_key: Option<String>, model: String) -> Self {
+    pub fn new(api_url: String, api_key: Option<String>, model: String, timeout_secs: u64) -> Self {
+        let mut builder = reqwest::Client::builder();
+        if timeout_secs > 0 {
+            builder = builder.timeout(std::time::Duration::from_secs(timeout_secs));
+        }
+        let client = builder.build().unwrap_or_else(|err| {
+            log::warn!(
+                "Failed to build HTTP client with {}s timeout ({}), falling back to default",
+                timeout_secs,
+                err
+            );
+            reqwest::Client::new()
+        });
+
         Self {
             api_url,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 
@@ -844,8 +857,12 @@ mod tests {
 
     #[test]
     fn test_openai_analyzer_new() {
-        let analyzer =
-            OpenAiAnalyzer::new("http://localhost:11434/v1".into(), None, "llama3".into());
+        let analyzer = OpenAiAnalyzer::new(
+            "http://localhost:11434/v1".into(),
+            None,
+            "llama3".into(),
+            300,
+        );
         assert_eq!(analyzer.api_url, "http://localhost:11434/v1");
         assert!(analyzer.api_key.is_none());
         assert_eq!(analyzer.model, "llama3");
@@ -853,8 +870,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_openai_analyzer_empty_entries() {
-        let analyzer =
-            OpenAiAnalyzer::new("http://localhost:11434/v1".into(), None, "llama3".into());
+        let analyzer = OpenAiAnalyzer::new(
+            "http://localhost:11434/v1".into(),
+            None,
+            "llama3".into(),
+            300,
+        );
         let summary = analyzer.summarize(&[]).await.unwrap();
         assert_eq!(summary.total_entries, 0);
     }

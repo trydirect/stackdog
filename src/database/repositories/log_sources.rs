@@ -94,10 +94,16 @@ pub fn get_log_source_by_path(pool: &DbPool, path_or_id: &str) -> Result<Option<
 /// Update the read position for a log source
 pub fn update_read_position(pool: &DbPool, path_or_id: &str, position: u64) -> Result<()> {
     let conn = pool.get()?;
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE log_sources SET last_read_position = ?1 WHERE path_or_id = ?2",
         params![position as i64, path_or_id],
     )?;
+    if updated == 0 {
+        return Err(anyhow::anyhow!(
+            "No log source registered for path_or_id '{}'",
+            path_or_id
+        ));
+    }
     Ok(())
 }
 

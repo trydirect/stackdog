@@ -91,6 +91,7 @@ impl SniffOrchestrator {
                     self.config.ai_api_url.clone(),
                     self.config.ai_api_key.clone(),
                     self.config.ai_model.clone(),
+                    self.config.ai_timeout_secs,
                 ))
             }
             config::AiProvider::Candle => {
@@ -279,12 +280,22 @@ impl SniffOrchestrator {
             }
 
             // 7. Update read position
+            //
+            // Keyed by path_or_id, not source_id: `LogSource::id` is a fresh UUID
+            // on every discovery pass, so it never matches the stored row and the
+            // offset would silently reset to 0 — re-reading the whole file forever.
             log::debug!("Step 7: saving read position ({})", reader.position());
-            let _ = log_sources_repo::update_read_position(
+            if let Err(err) = log_sources_repo::update_read_position(
                 &self.pool,
-                reader.source_id(),
+                &source.path_or_id,
                 reader.position(),
-            );
+            ) {
+                log::warn!(
+                    "Failed to save read position for {}: {}",
+                    source.path_or_id,
+                    err
+                );
+            }
         }
 
         Ok(result)
@@ -726,6 +737,67 @@ mod tests {
 
         assert!(result.sources_found >= 1);
         assert!(result.total_entries >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_persists_read_position_across_passes() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("position.log");
+        {
+            let mut f = std::fs::File::create(&log_path).unwrap();
+            writeln!(f, "INFO: service started").unwrap();
+            writeln!(f, "ERROR: connection failed").unwrap();
+        }
+        let path_str = log_path.to_string_lossy().to_string();
+
+        let mut config = SniffConfig::from_env_and_args(config::SniffArgs {
+            once: true,
+            consume: false,
+            output: "./stackdog-logs/",
+            sources: Some(&path_str),
+            interval: 30,
+            ai_provider: Some("candle"),
+            ai_model: None,
+            ai_api_url: None,
+            slack_webhook: None,
+            webhook_url: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_user: None,
+            smtp_password: None,
+            email_recipients: None,
+        });
+        config.database_url = ":memory:".into();
+
+        let orchestrator = SniffOrchestrator::new(config).unwrap();
+        orchestrator.run_once().await.unwrap();
+
+        let file_len = std::fs::metadata(&log_path).unwrap().len();
+        let saved = log_sources_repo::get_log_source_by_path(&orchestrator.pool, &path_str)
+            .unwrap()
+            .expect("source should be registered");
+        assert_eq!(
+            saved.last_read_position, file_len,
+            "read position must persist so the next pass does not re-read the file"
+        );
+
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .unwrap();
+            writeln!(f, "WARN: retry in 5s").unwrap();
+        }
+
+        orchestrator.run_once().await.unwrap();
+
+        let grown_len = std::fs::metadata(&log_path).unwrap().len();
+        let saved = log_sources_repo::get_log_source_by_path(&orchestrator.pool, &path_str)
+            .unwrap()
+            .expect("source should still be registered");
+        assert!(grown_len > file_len);
+        assert_eq!(saved.last_read_position, grown_len);
     }
 
     #[tokio::test]

@@ -3,6 +3,11 @@
 use std::env;
 use std::path::PathBuf;
 
+/// Default AI request timeout. Generous because local models on modest
+/// hardware can take minutes per completion, but bounded so a wedged
+/// inference host cannot stall the sniff loop indefinitely.
+const DEFAULT_AI_TIMEOUT_SECS: u64 = 300;
+
 /// AI provider selection
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiProvider {
@@ -52,6 +57,8 @@ pub struct SniffConfig {
     pub ai_api_key: Option<String>,
     /// AI model name
     pub ai_model: String,
+    /// Request timeout in seconds for AI API calls (0 disables the timeout)
+    pub ai_timeout_secs: u64,
     /// Database URL
     pub database_url: String,
     /// Slack webhook URL for alert notifications
@@ -195,6 +202,10 @@ impl SniffConfig {
                 .map(|s| s.to_string())
                 .or_else(|| env::var("STACKDOG_AI_MODEL").ok())
                 .unwrap_or_else(|| "llama3".into()),
+            ai_timeout_secs: env::var("STACKDOG_AI_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_AI_TIMEOUT_SECS),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into()),
             slack_webhook: args
                 .slack_webhook
