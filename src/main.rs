@@ -105,7 +105,7 @@ async fn run_serve() -> io::Result<()> {
     info!("Port: {}", app_port);
     info!("Database: {}", database_url);
 
-    let app_url = format!("{}:{}", &app_host, &app_port);
+    let app_url = format!("{}:{}", app_host, app_port);
     let display_host = if app_host == "0.0.0.0" {
         "127.0.0.1"
     } else {
