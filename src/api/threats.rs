@@ -83,48 +83,6 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use actix_web::{test, App};
-
-    #[actix_rt::test]
-    async fn test_get_threats() {
-        let pool = crate::database::create_pool(":memory:").unwrap();
-        crate::database::init_database(&pool).unwrap();
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool))
-                .configure(configure_routes),
-        )
-        .await;
-
-        let req = test::TestRequest::get().uri("/api/threats").to_request();
-        let resp = test::call_service(&app, req).await;
-
-        assert!(resp.status().is_success());
-    }
-
-    #[actix_rt::test]
-    async fn test_get_threat_statistics() {
-        let pool = crate::database::create_pool(":memory:").unwrap();
-        crate::database::init_database(&pool).unwrap();
-        let app = test::init_service(
-            App::new()
-                .app_data(web::Data::new(pool))
-                .configure(configure_routes),
-        )
-        .await;
-
-        let req = test::TestRequest::get()
-            .uri("/api/threats/statistics")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-
-        assert!(resp.status().is_success());
-    }
-}
-
 fn severity_to_score(severity: AlertSeverity) -> u32 {
     match severity {
         AlertSeverity::Critical => 95,
@@ -174,5 +132,47 @@ fn calculate_trend(alerts: &[Alert]) -> String {
         "decreasing".to_string()
     } else {
         "stable".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, App};
+
+    #[actix_rt::test]
+    async fn test_get_threats() {
+        let pool = crate::database::create_pool(":memory:").unwrap();
+        crate::database::init_database(&pool).unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool))
+                .configure(configure_routes),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/api/threats").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert!(resp.status().is_success());
+    }
+
+    #[actix_rt::test]
+    async fn test_get_threat_statistics() {
+        let pool = crate::database::create_pool(":memory:").unwrap();
+        crate::database::init_database(&pool).unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool))
+                .configure(configure_routes),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/threats/statistics")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert!(resp.status().is_success());
     }
 }
