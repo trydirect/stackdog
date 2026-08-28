@@ -280,6 +280,8 @@ mod tests {
         env::remove_var("STACKDOG_AI_API_URL");
         env::remove_var("STACKDOG_AI_API_KEY");
         env::remove_var("STACKDOG_AI_MODEL");
+        env::remove_var("STACKDOG_AI_TIMEOUT_SECS");
+        env::remove_var("STACKDOG_AI_MAX_TOKENS");
         env::remove_var("STACKDOG_SNIFF_OUTPUT_DIR");
         env::remove_var("STACKDOG_SNIFF_INTERVAL");
         env::remove_var("STACKDOG_SLACK_WEBHOOK_URL");

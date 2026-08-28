@@ -15,7 +15,6 @@ use crate::sniff::reader::LogEntry;
 const MAX_PROMPT_LINES: usize = 200;
 const MAX_PROMPT_CHARS: usize = 16_000;
 const MAX_LINE_CHARS: usize = 500;
-const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 /// Summary produced by AI analysis of log entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1015,5 +1014,53 @@ mod tests {
         let deserialized: LogSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.total_entries, 10);
         assert_eq!(deserialized.anomalies[0].severity, AnomalySeverity::Medium);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_basic() {
+        // Simulates a truncated LLM response — missing closing braces
+        let truncated = r#"{"summary": "Multiple errors detected", "error_count": 42"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["summary"], "Multiple errors detected");
+        assert_eq!(parsed["error_count"], 42);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_with_trailing_comma() {
+        let truncated = r#"{"summary": "Test", "error_count": 5, "#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["summary"], "Test");
+        assert_eq!(parsed["error_count"], 5);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_mid_string() {
+        let truncated = r#"{"summary": "Multiple failed connection at"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        // The string value will be truncated but still parseable
+        assert!(parsed["summary"].as_str().unwrap().starts_with("Multiple"));
+    }
+
+    #[test]
+    fn test_repair_truncated_json_with_nested_array() {
+        let truncated = r#"{"summary": "Test", "key_events": ["event1", "event2"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["key_events"][0], "event1");
+        assert_eq!(parsed["key_events"][1], "event2");
+    }
+
+    #[test]
+    fn test_repair_truncated_json_already_valid() {
+        let valid = r#"{"summary": "OK", "error_count": 0}"#;
+        assert!(repair_truncated_json(valid).is_none());
+    }
+
+    #[test]
+    fn test_repair_truncated_json_not_json() {
+        assert!(repair_truncated_json("this is not json at all").is_none());
     }
 }
