@@ -180,6 +180,36 @@ impl IpBanEngine {
             .map(str::to_string)
             .collect()
     }
+
+    /// Extract the real client IP from X-Forwarded-For / X-Real-IP headers in a
+    /// log line.  Returns the first public-routable IP found, or None.
+    pub fn extract_forwarded_ip(line: &str) -> Option<String> {
+        let lower = line.to_ascii_lowercase();
+
+        // Try X-Forwarded-For: client, proxy1, proxy2
+        if let Some(start) = lower.find("x-forwarded-for:") {
+            let after = &line[start + 16..];
+            let value = after.split('"').next().unwrap_or(after);
+            for candidate in value.split(',') {
+                let ip = candidate.trim();
+                if is_ipv4(ip) {
+                    return Some(ip.to_string());
+                }
+            }
+        }
+
+        // Try X-Real-IP: <ip>
+        if let Some(start) = lower.find("x-real-ip:") {
+            let after = &line[start + 10..];
+            let value = after.split('"').next().unwrap_or(after);
+            let ip = value.trim();
+            if is_ipv4(ip) {
+                return Some(ip.to_string());
+            }
+        }
+
+        None
+    }
 }
 
 fn is_ipv4(value: &str) -> bool {
@@ -231,6 +261,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
 
@@ -287,6 +318,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 0,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
 

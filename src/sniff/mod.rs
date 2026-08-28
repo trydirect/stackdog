@@ -328,13 +328,14 @@ impl SniffOrchestrator {
             };
 
             for ip in IpBanEngine::extract_ip_candidates(&anomaly.sample_line) {
-                if !is_public_routable_ipv4(&ip) {
+                let target_ip = resolve_ban_target(&ip, &anomaly.sample_line, engine);
+                if !is_public_routable_ipv4(&target_ip) {
                     continue;
                 }
 
                 engine
                     .record_offense(OffenseInput {
-                        ip_address: ip,
+                        ip_address: target_ip,
                         source_type: "sniff".into(),
                         reason: anomaly.description.clone(),
                         severity,
@@ -361,13 +362,14 @@ impl SniffOrchestrator {
             };
 
             for ip in IpBanEngine::extract_ip_candidates(&entry.line) {
-                if !is_public_routable_ipv4(&ip) {
+                let target_ip = resolve_ban_target(&ip, &entry.line, engine);
+                if !is_public_routable_ipv4(&target_ip) {
                     continue;
                 }
 
                 engine
                     .record_offense(OffenseInput {
-                        ip_address: ip,
+                        ip_address: target_ip,
                         source_type: "sniff".into(),
                         reason: reason.into(),
                         severity,
@@ -460,7 +462,13 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
     if let Some(detector_id) = anomaly.detector_id.as_deref() {
         if matches!(
             detector_id,
-            "web.login-bruteforce" | "web.path-traversal" | "web.archive-probe"
+            "web.login-bruteforce"
+                | "web.path-traversal"
+                | "web.archive-probe"
+                | "web.sqli-probe"
+                | "web.webshell-probe"
+                | "file.sensitive-access"
+                | "cloud.metadata-ssrf"
         ) {
             return true;
         }
@@ -474,9 +482,33 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         "authentication failures",
         "invalid user",
         "path traversal",
+        "credential scanning",
+        "sensitive file access",
+        "sql injection probing",
+        "ssrf",
+        "metadata access",
     ]
     .iter()
     .any(|needle| description.contains(needle))
+}
+
+/// If `ip` is a trusted proxy, try to extract the real client IP from
+/// X-Forwarded-For / X-Real-IP in the log line.  Otherwise return `ip` as-is.
+fn resolve_ban_target(ip: &str, line: &str, engine: &IpBanEngine) -> String {
+    let Ok(parsed) = ip.parse::<Ipv4Addr>() else {
+        return ip.to_string();
+    };
+    if engine.config().is_trusted_proxy(&parsed) {
+        if let Some(real_ip) = IpBanEngine::extract_forwarded_ip(line) {
+            log::debug!(
+                "Resolved proxied IP {} -> {} via X-Forwarded-For",
+                ip,
+                real_ip
+            );
+            return real_ip;
+        }
+    }
+    ip.to_string()
 }
 
 fn ssh_auth_failure_offense(line: &str) -> Option<(&'static str, AlertSeverity)> {
@@ -862,6 +894,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
         let source = LogSource::new(
@@ -1001,6 +1034,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
         let summary = make_summary(
@@ -1046,6 +1080,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
         let summary = make_summary(
@@ -1115,6 +1150,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
         let summary = make_detector_summary(
@@ -1151,6 +1187,7 @@ mod tests {
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
             },
         );
         let summary = make_summary(
