@@ -75,6 +75,8 @@ pub struct SniffConfig {
     pub smtp_password: Option<String>,
     /// Email recipients for alert notifications
     pub email_recipients: Vec<String>,
+    /// Container names to skip during posture checks (trusted services)
+    pub trusted_containers: Vec<String>,
 }
 
 /// Arguments for building a SniffConfig
@@ -244,6 +246,12 @@ impl SniffConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
+            trusted_containers: env::var("STACKDOG_TRUSTED_CONTAINERS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
         }
     }
 }
@@ -274,6 +282,7 @@ mod tests {
         env::remove_var("STACKDOG_SMTP_USER");
         env::remove_var("STACKDOG_SMTP_PASSWORD");
         env::remove_var("STACKDOG_EMAIL_RECIPIENTS");
+        env::remove_var("STACKDOG_TRUSTED_CONTAINERS");
     }
 
     #[test]

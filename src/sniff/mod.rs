@@ -161,12 +161,22 @@ impl SniffOrchestrator {
         match DockerClient::new().await {
             Ok(docker) => {
                 let postures = docker.list_container_postures(true).await?;
+                let filtered: Vec<_> = postures
+                    .into_iter()
+                    .filter(|p| {
+                        !self
+                            .config
+                            .trusted_containers
+                            .iter()
+                            .any(|t| t == &p.name)
+                    })
+                    .collect();
                 self.report_detector_batch(
                     &mut result,
                     "docker-posture",
-                    postures.len(),
+                    filtered.len(),
                     "Docker posture audit",
-                    self.detectors.detect_docker_posture_anomalies(&postures),
+                    self.detectors.detect_docker_posture_anomalies(&filtered),
                 )
                 .await?;
             }

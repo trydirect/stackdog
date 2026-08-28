@@ -3,7 +3,10 @@
 //! Converts log summaries and anomalies into alerts, then dispatches
 //! them via the existing notification channels.
 
+use std::cell::RefCell;
+
 use crate::alerting::alert::{Alert, AlertSeverity, AlertType};
+use crate::alerting::dedup::{AlertDeduplicator, DedupConfig};
 use crate::alerting::notifications::{NotificationConfig, NotificationResult};
 use crate::database::connection::DbPool;
 use crate::database::models::{Alert as StoredAlert, AlertMetadata};
@@ -15,12 +18,14 @@ use anyhow::Result;
 /// Reports log analysis results to alert channels and persists summaries
 pub struct Reporter {
     notification_config: NotificationConfig,
+    deduplicator: RefCell<AlertDeduplicator>,
 }
 
 impl Reporter {
     pub fn new(notification_config: NotificationConfig) -> Self {
         Self {
             notification_config,
+            deduplicator: RefCell::new(AlertDeduplicator::new(DedupConfig::default())),
         }
     }
 
@@ -77,6 +82,15 @@ impl Reporter {
                 anomaly.description, summary.source_id, anomaly.sample_line
             );
             let alert = Alert::new(AlertType::AnomalyDetected, alert_severity, message.clone());
+
+            // Deduplicate: suppress identical alerts within the time window
+            if self.deduplicator.borrow_mut().is_duplicate(&alert) {
+                log::debug!(
+                    "Suppressing duplicate alert: {}",
+                    anomaly.description
+                );
+                continue;
+            }
 
             if let Some(pool) = pool {
                 let mut metadata = AlertMetadata::default()
