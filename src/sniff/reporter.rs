@@ -83,8 +83,13 @@ impl Reporter {
             );
             let alert = Alert::new(AlertType::AnomalyDetected, alert_severity, message.clone());
 
-            // Deduplicate: suppress identical alerts within the time window
-            if self.deduplicator.borrow_mut().is_duplicate(&alert) {
+            // Deduplicate by description only (ignore source_id and sample_line
+            // which vary across containers and timestamps for the same finding)
+            let dedup_key = format!(
+                "{}:{:?}:{}",
+                "AnomalyDetected", alert_severity, anomaly.description
+            );
+            if self.deduplicator.borrow_mut().is_duplicate_key(&dedup_key) {
                 log::debug!("Suppressing duplicate alert: {}", anomaly.description);
                 continue;
             }
