@@ -1,6 +1,6 @@
 [package]
 name = "stackdog"
-version = "0.2.3"
+version = "0.2.4"
 authors = ["Vasili Pascal <info@try.direct>"]
 edition = "2021"
 description = "Security platform for Docker containers and Linux servers"
