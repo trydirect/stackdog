@@ -92,6 +92,7 @@ impl SniffOrchestrator {
                     self.config.ai_api_key.clone(),
                     self.config.ai_model.clone(),
                     self.config.ai_timeout_secs,
+                    self.config.ai_max_tokens,
                 ))
             }
             config::AiProvider::Candle => {
@@ -163,13 +164,7 @@ impl SniffOrchestrator {
                 let postures = docker.list_container_postures(true).await?;
                 let filtered: Vec<_> = postures
                     .into_iter()
-                    .filter(|p| {
-                        !self
-                            .config
-                            .trusted_containers
-                            .iter()
-                            .any(|t| t == &p.name)
-                    })
+                    .filter(|p| !self.config.trusted_containers.iter().any(|t| t == &p.name))
                     .collect();
                 self.report_detector_batch(
                     &mut result,

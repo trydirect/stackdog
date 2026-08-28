@@ -85,10 +85,7 @@ impl Reporter {
 
             // Deduplicate: suppress identical alerts within the time window
             if self.deduplicator.borrow_mut().is_duplicate(&alert) {
-                log::debug!(
-                    "Suppressing duplicate alert: {}",
-                    anomaly.description
-                );
+                log::debug!("Suppressing duplicate alert: {}", anomaly.description);
                 continue;
             }
 

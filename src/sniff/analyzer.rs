@@ -15,6 +15,7 @@ use crate::sniff::reader::LogEntry;
 const MAX_PROMPT_LINES: usize = 200;
 const MAX_PROMPT_CHARS: usize = 16_000;
 const MAX_LINE_CHARS: usize = 500;
+const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 /// Summary produced by AI analysis of log entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +77,7 @@ pub struct OpenAiAnalyzer {
     api_url: String,
     api_key: Option<String>,
     model: String,
+    max_tokens: u32,
     client: reqwest::Client,
 }
 
@@ -91,7 +93,13 @@ impl OpenAiAnalyzer {
         }
     }
 
-    pub fn new(api_url: String, api_key: Option<String>, model: String, timeout_secs: u64) -> Self {
+    pub fn new(
+        api_url: String,
+        api_key: Option<String>,
+        model: String,
+        timeout_secs: u64,
+        max_tokens: u32,
+    ) -> Self {
         let mut builder = reqwest::Client::builder();
         if timeout_secs > 0 {
             builder = builder.timeout(std::time::Duration::from_secs(timeout_secs));
@@ -109,6 +117,7 @@ impl OpenAiAnalyzer {
             api_url,
             api_key,
             model,
+            max_tokens,
             client,
         }
     }
@@ -307,6 +316,87 @@ fn extract_json(content: &str) -> &str {
     trimmed
 }
 
+/// Attempt to repair truncated JSON by closing open braces/brackets and
+/// trimming incomplete trailing string values.  Returns `None` if the
+/// input doesn't look like JSON at all.
+fn repair_truncated_json(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let start = trimmed.find('{')?;
+    let json = &trimmed[start..];
+
+    // Already valid — nothing to repair.
+    if serde_json::from_str::<serde_json::Value>(json).is_ok() {
+        return None;
+    }
+
+    // Count unmatched openers to decide how many closers we need.
+    let mut depth: i32 = 0; // braces
+    let mut bracket_depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for ch in json.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            _ => {}
+        }
+    }
+
+    // If we're inside a string when we ran out of input, close it first.
+    let mut repair = String::from(json);
+    if in_string {
+        repair.push('"');
+    }
+
+    // Close any incomplete array entries with a trailing `]` if needed.
+    // (We don't try to be perfect — just enough for serde to parse the
+    // fields that *were* fully written.)
+    for _ in 0..bracket_depth.max(0) {
+        repair.push(']');
+    }
+    for _ in 0..depth.max(0) {
+        repair.push('}');
+    }
+
+    // If the last meaningful token before our closers is a trailing comma
+    // or colon, strip it — serde will reject `{"a":}` or `{"a":1,}`.
+    // We do a simple scan from the end ignoring the closers we just added.
+    let closers_len =
+        (bracket_depth.max(0) as usize) + (depth.max(0) as usize) + if in_string { 1 } else { 0 };
+    let body_end = repair.len() - closers_len;
+    let body = &repair[..body_end];
+    let trimmed_body = body.trim_end();
+    if trimmed_body.ends_with(',') || trimmed_body.ends_with(':') {
+        let new_body = &trimmed_body[..trimmed_body.len() - 1];
+        repair = format!("{}{}", new_body.trim_end(), &repair[body_end..]);
+    }
+
+    // Only return the repair if it actually parses.
+    if serde_json::from_str::<serde_json::Value>(&repair).is_ok() {
+        Some(repair)
+    } else {
+        None
+    }
+}
+
 /// Parse LLM severity string to enum
 fn parse_severity(s: &str) -> AnomalySeverity {
     match s.to_lowercase().as_str() {
@@ -326,10 +416,28 @@ fn parse_llm_response(source_id: &str, entries: &[LogEntry], raw_json: &str) -> 
     );
     log::trace!("Raw LLM response:\n{}", raw_json);
 
-    let analysis: LlmAnalysis = serde_json::from_str(raw_json).context(format!(
-        "Failed to parse LLM response as JSON. Response starts with: {}",
-        &raw_json[..raw_json.len().min(200)]
-    ))?;
+    let analysis: LlmAnalysis = match serde_json::from_str(raw_json) {
+        Ok(a) => a,
+        Err(e) => {
+            // Try to repair truncated JSON before giving up.
+            if let Some(repaired) = repair_truncated_json(raw_json) {
+                log::warn!(
+                    "LLM response was truncated ({}); repaired to {} bytes",
+                    e,
+                    repaired.len()
+                );
+                serde_json::from_str(&repaired).context(format!(
+                    "Failed to parse repaired LLM response. Original starts with: {}",
+                    &raw_json[..raw_json.len().min(200)]
+                ))?
+            } else {
+                return Err(e).context(format!(
+                    "Failed to parse LLM response as JSON. Response starts with: {}",
+                    &raw_json[..raw_json.len().min(200)]
+                ));
+            }
+        }
+    };
 
     log::debug!(
         "LLM analysis parsed — summary: {:?}, errors: {:?}, warnings: {:?}, anomalies: {}",
@@ -424,14 +532,15 @@ impl LogAnalyzer for OpenAiAnalyzer {
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a log analysis assistant. Analyze logs and return structured JSON."
+                    "content": "You are a log analysis assistant. Analyze logs and return structured JSON. Be concise — limit summary to 1-2 sentences, max 5 key events, max 5 anomalies."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_tokens": self.max_tokens
         });
 
         let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
@@ -862,6 +971,7 @@ mod tests {
             None,
             "llama3".into(),
             300,
+            2048,
         );
         assert_eq!(analyzer.api_url, "http://localhost:11434/v1");
         assert!(analyzer.api_key.is_none());
@@ -875,6 +985,7 @@ mod tests {
             None,
             "llama3".into(),
             300,
+            2048,
         );
         let summary = analyzer.summarize(&[]).await.unwrap();
         assert_eq!(summary.total_entries, 0);

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 /// hardware can take minutes per completion, but bounded so a wedged
 /// inference host cannot stall the sniff loop indefinitely.
 const DEFAULT_AI_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_AI_MAX_TOKENS: u32 = 2048;
 
 /// AI provider selection
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +60,8 @@ pub struct SniffConfig {
     pub ai_model: String,
     /// Request timeout in seconds for AI API calls (0 disables the timeout)
     pub ai_timeout_secs: u64,
+    /// Max tokens for AI API response (0 lets the provider decide)
+    pub ai_max_tokens: u32,
     /// Database URL
     pub database_url: String,
     /// Slack webhook URL for alert notifications
@@ -208,6 +211,10 @@ impl SniffConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_AI_TIMEOUT_SECS),
+            ai_max_tokens: env::var("STACKDOG_AI_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_AI_MAX_TOKENS),
             database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into()),
             slack_webhook: args
                 .slack_webhook
