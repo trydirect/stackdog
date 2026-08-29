@@ -327,7 +327,17 @@ impl SniffOrchestrator {
                 analyzer::AnomalySeverity::Critical => crate::alerting::AlertSeverity::Critical,
             };
 
-            for ip in IpBanEngine::extract_ip_candidates(&anomaly.sample_line) {
+            // Try sample_line first, fall back to scanning entries
+            let mut ips = IpBanEngine::extract_ip_candidates(&anomaly.sample_line);
+            if ips.is_empty() {
+                for entry in entries {
+                    ips.extend(IpBanEngine::extract_ip_candidates(&entry.line));
+                }
+                ips.sort();
+                ips.dedup();
+            }
+
+            for ip in ips {
                 let target_ip = resolve_ban_target(&ip, &anomaly.sample_line, engine);
                 if !is_public_routable_ipv4(&target_ip) {
                     continue;
@@ -487,6 +497,14 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         "sql injection probing",
         "ssrf",
         "metadata access",
+        // AI-generated attack descriptions
+        "rejected connection",
+        "coordinated attack",
+        "possible attack",
+        "targeting",
+        "probing",
+        "scanning",
+        "frequent access",
     ]
     .iter()
     .any(|needle| description.contains(needle))
