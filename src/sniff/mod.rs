@@ -25,7 +25,9 @@ use crate::sniff::reporter::Reporter;
 use crate::tools::ToolRegistry;
 use anyhow::Result;
 use chrono::Utc;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::sync::Mutex;
 
 /// Main orchestrator for the sniff command
 pub struct SniffOrchestrator {
@@ -35,6 +37,8 @@ pub struct SniffOrchestrator {
     reporter: Reporter,
     ip_ban: Option<IpBanEngine>,
     tool_registry: ToolRegistry,
+    /// Last AI analysis time per source (prevents re-analyzing every 30s)
+    last_ai_analysis: Mutex<HashMap<String, chrono::DateTime<Utc>>>,
 }
 
 impl SniffOrchestrator {
@@ -84,6 +88,7 @@ impl SniffOrchestrator {
             reporter,
             ip_ban,
             tool_registry,
+            last_ai_analysis: Mutex::new(HashMap::new()),
         })
     }
 
@@ -234,37 +239,62 @@ impl SniffOrchestrator {
 
             // 4. Analyze
             log::debug!("Step 4: analyzing {} entries...", entries.len());
-            let mut summary = if self.config.ai_tools_enabled {
-                match analyzer
-                    .summarize_with_tools(&entries, &self.tool_registry)
-                    .await
-                {
-                    Ok(summary) => summary,
+
+            // Run built-in detectors first (free, local)
+            let detector_anomalies = self.detectors.detect_log_anomalies(&entries);
+            let has_errors = entries.iter().any(|e| {
+                let lower = e.line.to_lowercase();
+                lower.contains("error") || lower.contains("fatal") || lower.contains("panic")
+            });
+
+            // Skip AI if no errors and no detector findings — use pattern analyzer
+            let skip_ai = !has_errors && detector_anomalies.is_empty();
+
+            // Check per-source cooldown (default 5 minutes between AI calls)
+            let source_key = reader.source_id().to_string();
+            let cooldown_secs = std::env::var("STACKDOG_AI_COOLDOWN_SECS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(300);
+            let within_cooldown = {
+                let last = self.last_ai_analysis.lock().unwrap();
+                last.get(&source_key)
+                    .map(|t| (Utc::now() - t).num_seconds() < cooldown_secs)
+                    .unwrap_or(false)
+            };
+
+            let mut summary = if skip_ai || within_cooldown {
+                if within_cooldown {
+                    log::debug!("  Source {} within cooldown ({}s), using pattern analyzer", source_key, cooldown_secs);
+                } else {
+                    log::debug!("  No errors or detector findings, using pattern analyzer");
+                }
+                analyzer::PatternAnalyzer::new().summarize(&entries).await?
+            } else if self.config.ai_tools_enabled {
+                // Tool-use path — single call, no fallback to avoid double billing
+                match analyzer.summarize_with_tools(&entries, &self.tool_registry).await {
+                    Ok(summary) => {
+                        self.last_ai_analysis.lock().unwrap().insert(source_key.clone(), Utc::now());
+                        summary
+                    }
                     Err(err) => {
                         log::warn!(
-                            "Tool-use analyzer failed for {}: {}. Falling back to standard analysis.",
+                            "AI analysis failed for {}: {}. Using pattern analyzer.",
                             reader.source_id(),
                             err
                         );
-                        match analyzer.summarize(&entries).await {
-                            Ok(s) => s,
-                            Err(err2) => {
-                                log::warn!(
-                                    "Standard analyzer also failed for {}: {}. Falling back to pattern analyzer.",
-                                    reader.source_id(),
-                                    err2
-                                );
-                                analyzer::PatternAnalyzer::new().summarize(&entries).await?
-                            }
-                        }
+                        analyzer::PatternAnalyzer::new().summarize(&entries).await?
                     }
                 }
             } else {
                 match analyzer.summarize(&entries).await {
-                    Ok(summary) => summary,
+                    Ok(summary) => {
+                        self.last_ai_analysis.lock().unwrap().insert(source_key.clone(), Utc::now());
+                        summary
+                    }
                     Err(err) => {
                         log::warn!(
-                            "Primary analyzer failed for {}: {}. Falling back to local pattern analyzer.",
+                            "AI analysis failed for {}: {}. Using pattern analyzer.",
                             reader.source_id(),
                             err
                         );
@@ -272,7 +302,6 @@ impl SniffOrchestrator {
                     }
                 }
             };
-            let detector_anomalies = self.detectors.detect_log_anomalies(&entries);
             if !detector_anomalies.is_empty() {
                 summary.key_events.extend(
                     detector_anomalies
