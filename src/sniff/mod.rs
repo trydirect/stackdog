@@ -22,6 +22,7 @@ use crate::sniff::consumer::LogConsumer;
 use crate::sniff::discovery::LogSourceType;
 use crate::sniff::reader::{DockerLogReader, FileLogReader, LogReader};
 use crate::sniff::reporter::Reporter;
+use crate::tools::ToolRegistry;
 use anyhow::Result;
 use chrono::Utc;
 use std::net::Ipv4Addr;
@@ -33,6 +34,7 @@ pub struct SniffOrchestrator {
     detectors: DetectorRegistry,
     reporter: Reporter,
     ip_ban: Option<IpBanEngine>,
+    tool_registry: ToolRegistry,
 }
 
 impl SniffOrchestrator {
@@ -69,12 +71,19 @@ impl SniffOrchestrator {
             .enabled
             .then(|| IpBanEngine::new(pool.clone(), ip_ban_config));
 
+        let tool_registry = ToolRegistry::new(
+            pool.clone(),
+            IpBanConfig::from_env(),
+            DetectorRegistry::default(),
+        );
+
         Ok(Self {
             config,
             pool,
             detectors: DetectorRegistry::default(),
             reporter,
             ip_ban,
+            tool_registry,
         })
     }
 
@@ -162,6 +171,8 @@ impl SniffOrchestrator {
         match DockerClient::new().await {
             Ok(docker) => {
                 let postures = docker.list_container_postures(true).await?;
+                // Update tool registry with all postures (before filtering)
+                self.tool_registry.set_postures(postures.clone());
                 let filtered: Vec<_> = postures
                     .into_iter()
                     .filter(|p| !self.config.trusted_containers.iter().any(|t| t == &p.name))
@@ -223,15 +234,39 @@ impl SniffOrchestrator {
 
             // 4. Analyze
             log::debug!("Step 4: analyzing {} entries...", entries.len());
-            let mut summary = match analyzer.summarize(&entries).await {
-                Ok(summary) => summary,
-                Err(err) => {
-                    log::warn!(
-                        "Primary analyzer failed for {}: {}. Falling back to local pattern analyzer.",
-                        reader.source_id(),
-                        err
-                    );
-                    analyzer::PatternAnalyzer::new().summarize(&entries).await?
+            let mut summary = if self.config.ai_tools_enabled {
+                match analyzer.summarize_with_tools(&entries, &self.tool_registry).await {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        log::warn!(
+                            "Tool-use analyzer failed for {}: {}. Falling back to standard analysis.",
+                            reader.source_id(),
+                            err
+                        );
+                        match analyzer.summarize(&entries).await {
+                            Ok(s) => s,
+                            Err(err2) => {
+                                log::warn!(
+                                    "Standard analyzer also failed for {}: {}. Falling back to pattern analyzer.",
+                                    reader.source_id(),
+                                    err2
+                                );
+                                analyzer::PatternAnalyzer::new().summarize(&entries).await?
+                            }
+                        }
+                    }
+                }
+            } else {
+                match analyzer.summarize(&entries).await {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        log::warn!(
+                            "Primary analyzer failed for {}: {}. Falling back to local pattern analyzer.",
+                            reader.source_id(),
+                            err
+                        );
+                        analyzer::PatternAnalyzer::new().summarize(&entries).await?
+                    }
                 }
             };
             let detector_anomalies = self.detectors.detect_log_anomalies(&entries);
@@ -253,9 +288,12 @@ impl SniffOrchestrator {
 
             // 5. Report
             log::debug!("Step 5: reporting results...");
-            let report = self.reporter.report(&summary, Some(&self.pool)).await?;
-            result.anomalies_found += report.anomalies_reported;
             let source = &sources[i];
+            let report = self
+                .reporter
+                .report(&summary, Some(&self.pool), Some(source))
+                .await?;
+            result.anomalies_found += report.anomalies_reported;
             if let Some(engine) = &self.ip_ban {
                 self.apply_ip_ban(&entries, source, &summary, engine)
                     .await?;
@@ -421,7 +459,10 @@ impl SniffOrchestrator {
                 .collect(),
             anomalies,
         };
-        let report = self.reporter.report(&summary, Some(&self.pool)).await?;
+        let report = self
+            .reporter
+            .report(&summary, Some(&self.pool), None)
+            .await?;
         result.anomalies_found += report.anomalies_reported;
         Ok(())
     }
@@ -648,6 +689,7 @@ mod tests {
                 detector_id: None,
                 detector_family: None,
                 confidence: None,
+                suggested_action: None,
             }],
         }
     }
@@ -674,6 +716,7 @@ mod tests {
                 detector_id: detector_id.map(str::to_string),
                 detector_family: None,
                 confidence: None,
+                suggested_action: None,
             }],
         }
     }
@@ -704,6 +747,7 @@ mod tests {
             detector_id: Some("web.path-traversal".into()),
             detector_family: Some("Web".into()),
             confidence: Some(82),
+            suggested_action: None,
         };
 
         assert!(should_auto_ban(&anomaly));
@@ -718,6 +762,7 @@ mod tests {
             detector_id: Some("secrets.log-leakage".into()),
             detector_family: Some("Secrets".into()),
             confidence: Some(92),
+            suggested_action: None,
         };
 
         assert!(!should_auto_ban(&anomaly));

@@ -74,6 +74,7 @@ impl DetectorFinding {
             detector_id: Some(self.detector_id.clone()),
             detector_family: Some(self.family.to_string()),
             confidence: Some(self.confidence),
+            suggested_action: None,
         }
     }
 }

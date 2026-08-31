@@ -13,6 +13,7 @@ use crate::database::models::{Alert as StoredAlert, AlertMetadata};
 use crate::database::repositories::alerts::create_alert;
 use crate::database::repositories::log_sources;
 use crate::sniff::analyzer::{AnomalySeverity, LogSummary};
+use crate::sniff::discovery::{LogSource, LogSourceType};
 use anyhow::Result;
 
 /// Reports log analysis results to alert channels and persists summaries
@@ -40,11 +41,17 @@ impl Reporter {
     }
 
     /// Report a log summary: persist to DB and send anomaly alerts
+    ///
+    /// `source` carries the human-readable identity of the log source. It is
+    /// optional because synthetic summaries (file integrity, package audit)
+    /// already use a readable `source_id`.
     pub async fn report(
         &self,
         summary: &LogSummary,
         pool: Option<&DbPool>,
+        source: Option<&LogSource>,
     ) -> Result<ReportResult> {
+        let source_label = describe_source(&summary.source_id, source);
         let mut alerts_sent = 0;
 
         // Persist summary to database
@@ -77,10 +84,13 @@ impl Reporter {
                 anomaly.description
             );
 
-            let message = format!(
+            let mut message = format!(
                 "[Log Sniff] {} — Source: {} | Sample: {}",
-                anomaly.description, summary.source_id, anomaly.sample_line
+                anomaly.description, source_label, anomaly.sample_line
             );
+            if let Some(ref action) = anomaly.suggested_action {
+                message.push_str(&format!("\nSuggested: {}", action));
+            }
             let alert = Alert::new(AlertType::AnomalyDetected, alert_severity, message.clone());
 
             // Deduplicate by description only (ignore source_id and sample_line
@@ -95,9 +105,25 @@ impl Reporter {
             }
 
             if let Some(pool) = pool {
+                // Record the stable identity (path or container ID), not the
+                // per-pass UUID in `summary.source_id`, so stored alerts can be
+                // joined back to `log_sources.path_or_id`.
                 let mut metadata = AlertMetadata::default()
-                    .with_source(summary.source_id.clone())
+                    .with_source(
+                        source
+                            .map(|s| s.path_or_id.clone())
+                            .unwrap_or_else(|| summary.source_id.clone()),
+                    )
                     .with_reason(anomaly.description.clone());
+                if let Some(s) = source {
+                    metadata.extra.insert("source_name".into(), s.name.clone());
+                    metadata
+                        .extra
+                        .insert("source_type".into(), s.source_type.to_string());
+                    if s.source_type == LogSourceType::DockerContainer {
+                        metadata = metadata.with_container_id(s.path_or_id.clone());
+                    }
+                }
                 if let Some(detector_id) = &anomaly.detector_id {
                     metadata
                         .extra
@@ -144,7 +170,7 @@ impl Reporter {
         // Log summary to console
         log::info!(
             "📊 Log Summary [{}]: {} entries, {} errors, {} warnings, {} anomalies",
-            summary.source_id,
+            source_label,
             summary.total_entries,
             summary.error_count,
             summary.warning_count,
@@ -156,6 +182,23 @@ impl Reporter {
             notifications_sent: alerts_sent,
             summary_persisted: pool.is_some(),
         })
+    }
+}
+
+/// Render a log source as something a human can act on: a container name, or a
+/// file path. Falls back to the raw summary source id when no source is known.
+fn describe_source(summary_source_id: &str, source: Option<&LogSource>) -> String {
+    match source {
+        Some(source) => match source.source_type {
+            LogSourceType::DockerContainer => {
+                let short_id: String = source.path_or_id.chars().take(12).collect();
+                format!("container {} [{}]", source.name, short_id)
+            }
+            LogSourceType::SystemLog | LogSourceType::CustomFile => {
+                format!("file {}", source.path_or_id)
+            }
+        },
+        None => summary_source_id.to_string(),
     }
 }
 
@@ -213,7 +256,7 @@ mod tests {
     async fn test_report_no_anomalies() {
         let reporter = Reporter::new(NotificationConfig::default());
         let summary = make_summary(vec![]);
-        let result = reporter.report(&summary, None).await.unwrap();
+        let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 0);
         assert_eq!(result.notifications_sent, 0);
         assert!(!result.summary_persisted);
@@ -229,9 +272,10 @@ mod tests {
             detector_id: None,
             detector_family: None,
             confidence: None,
+            suggested_action: None,
         }]);
 
-        let result = reporter.report(&summary, None).await.unwrap();
+        let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 1);
         assert_eq!(result.notifications_sent, 1);
     }
@@ -244,7 +288,7 @@ mod tests {
         let reporter = Reporter::new(NotificationConfig::default());
         let summary = make_summary(vec![]);
 
-        let result = reporter.report(&summary, Some(&pool)).await.unwrap();
+        let result = reporter.report(&summary, Some(&pool), None).await.unwrap();
         assert!(result.summary_persisted);
 
         // Verify summary was stored
@@ -266,9 +310,10 @@ mod tests {
             detector_id: Some("web.sqli-probe".into()),
             detector_family: Some("Web".into()),
             confidence: Some(84),
+            suggested_action: None,
         }]);
 
-        reporter.report(&summary, Some(&pool)).await.unwrap();
+        reporter.report(&summary, Some(&pool), None).await.unwrap();
 
         let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
         assert_eq!(alerts.len(), 1);
@@ -284,6 +329,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_describe_source_renders_container_and_file() {
+        let container = LogSource::new(
+            LogSourceType::DockerContainer,
+            "a6f2ec2d90294889".into(),
+            "mailer".into(),
+        );
+        assert_eq!(
+            describe_source("ignored", Some(&container)),
+            "container mailer [a6f2ec2d9029]"
+        );
+
+        let file = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/syslog".into(),
+            "syslog".into(),
+        );
+        assert_eq!(
+            describe_source("ignored", Some(&file)),
+            "file /var/log/syslog"
+        );
+
+        assert_eq!(describe_source("file-integrity", None), "file-integrity");
+    }
+
+    #[tokio::test]
+    async fn test_report_records_stable_source_identity() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+
+        let source = LogSource::new(
+            LogSourceType::DockerContainer,
+            "a6f2ec2d90294889".into(),
+            "mailer".into(),
+        );
+        let reporter = Reporter::new(NotificationConfig::default());
+        let summary = make_summary(vec![LogAnomaly {
+            description: "Multiple instances of EmptyEmailBodyError".into(),
+            severity: AnomalySeverity::Critical,
+            sample_line: "ERROR EmptyEmailBodyError".into(),
+            detector_id: None,
+            detector_family: None,
+            confidence: None,
+            suggested_action: None,
+        }]);
+
+        reporter
+            .report(&summary, Some(&pool), Some(&source))
+            .await
+            .unwrap();
+
+        let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0]
+            .message
+            .contains("container mailer [a6f2ec2d9029]"));
+        let metadata = alerts[0].metadata.as_ref().unwrap();
+        assert_eq!(metadata.source.as_deref(), Some("a6f2ec2d90294889"));
+        assert_eq!(metadata.container_id.as_deref(), Some("a6f2ec2d90294889"));
+        assert_eq!(
+            metadata.extra.get("source_name").map(String::as_str),
+            Some("mailer")
+        );
+    }
+
     #[tokio::test]
     async fn test_report_multiple_anomalies() {
         let reporter = Reporter::new(NotificationConfig::default());
@@ -295,6 +405,7 @@ mod tests {
                 detector_id: None,
                 detector_family: None,
                 confidence: None,
+                suggested_action: None,
             },
             LogAnomaly {
                 description: "Unusual pattern".into(),
@@ -303,10 +414,11 @@ mod tests {
                 detector_id: None,
                 detector_family: None,
                 confidence: None,
+                suggested_action: None,
             },
         ]);
 
-        let result = reporter.report(&summary, None).await.unwrap();
+        let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 2);
         assert_eq!(result.notifications_sent, 2);
     }
@@ -317,7 +429,7 @@ mod tests {
         let reporter = Reporter::new(config);
         // Just ensure it constructs without error
         let summary = make_summary(vec![]);
-        let result = reporter.report(&summary, None).await;
+        let result = reporter.report(&summary, None, None).await;
         assert!(result.is_ok());
     }
 
@@ -333,9 +445,10 @@ mod tests {
             detector_id: None,
             detector_family: None,
             confidence: None,
+            suggested_action: None,
         }]);
 
-        let result = reporter.report(&summary, None).await.unwrap();
+        let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 1);
         assert_eq!(result.notifications_sent, 1);
     }

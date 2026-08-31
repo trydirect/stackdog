@@ -9,6 +9,8 @@ pub mod docker;
 pub mod ip_ban;
 pub mod types;
 
+use std::sync::RwLock;
+
 use crate::database::connection::DbPool;
 use crate::detectors::audits::ContainerPosture;
 use crate::detectors::DetectorRegistry;
@@ -22,7 +24,7 @@ pub struct ToolRegistry {
     ip_ban_config: IpBanConfig,
     detectors: DetectorRegistry,
     /// Pre-fetched container postures (populated each sniff pass)
-    postures: Vec<ContainerPosture>,
+    postures: RwLock<Vec<ContainerPosture>>,
 }
 
 impl ToolRegistry {
@@ -35,13 +37,13 @@ impl ToolRegistry {
             pool,
             ip_ban_config,
             detectors,
-            postures: Vec::new(),
+            postures: RwLock::new(Vec::new()),
         }
     }
 
     /// Update container postures (called each sniff pass before analysis)
-    pub fn set_postures(&mut self, postures: Vec<ContainerPosture>) {
-        self.postures = postures;
+    pub fn set_postures(&self, postures: Vec<ContainerPosture>) {
+        *self.postures.write().unwrap() = postures;
     }
 
     /// All tool definitions for the OpenAI `tools` array
@@ -60,9 +62,13 @@ impl ToolRegistry {
         match call.function.name.as_str() {
             "check_ip_status" => ip_ban::execute_check_ip_status(&self.pool, args),
             "ban_ip" => ip_ban::execute_ban_ip(&self.pool, &self.ip_ban_config, args),
-            "list_containers" => docker::execute_list_containers(&self.postures),
+            "list_containers" => {
+                let postures = self.postures.read().unwrap();
+                docker::execute_list_containers(&postures)
+            }
             "get_container_posture" => {
-                docker::execute_get_container_posture(&self.postures, args)
+                let postures = self.postures.read().unwrap();
+                docker::execute_get_container_posture(&postures, args)
             }
             "recent_alerts" => alerts::execute_recent_alerts(&self.pool, args).await,
             "run_detectors" => detectors::execute_run_detectors(&self.detectors, args),
