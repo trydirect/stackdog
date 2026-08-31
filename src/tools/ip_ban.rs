@@ -134,14 +134,7 @@ pub fn execute_ban_ip(pool: &DbPool, config: &IpBanConfig, args: &str) -> ToolRe
         return ToolResult::error("ban_ip", &format!("Failed to mark blocked: {}", e));
     }
 
-    // Apply firewall block on Linux
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(engine) = IpBanEngine::new(pool.clone(), config.clone()) {
-            // The mark_blocked already happened; firewall block is best-effort
-            log::info!("IP {} banned via AI tool until {}", args.ip_address, blocked_until);
-        }
-    }
+    log::info!("IP {} banned via AI tool until {}", args.ip_address, blocked_until);
 
     let cli_cmd = format!(
         "stackdog ban-ip {} --duration {}s --reason \"{}\"",
