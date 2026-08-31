@@ -265,16 +265,26 @@ impl SniffOrchestrator {
 
             let mut summary = if skip_ai || within_cooldown {
                 if within_cooldown {
-                    log::debug!("  Source {} within cooldown ({}s), using pattern analyzer", source_key, cooldown_secs);
+                    log::debug!(
+                        "  Source {} within cooldown ({}s), using pattern analyzer",
+                        source_key,
+                        cooldown_secs
+                    );
                 } else {
                     log::debug!("  No errors or detector findings, using pattern analyzer");
                 }
                 analyzer::PatternAnalyzer::new().summarize(&entries).await?
             } else if self.config.ai_tools_enabled {
                 // Tool-use path — single call, no fallback to avoid double billing
-                match analyzer.summarize_with_tools(&entries, &self.tool_registry).await {
+                match analyzer
+                    .summarize_with_tools(&entries, &self.tool_registry)
+                    .await
+                {
                     Ok(summary) => {
-                        self.last_ai_analysis.lock().unwrap().insert(source_key.clone(), Utc::now());
+                        self.last_ai_analysis
+                            .lock()
+                            .unwrap()
+                            .insert(source_key.clone(), Utc::now());
                         summary
                     }
                     Err(err) => {
@@ -289,7 +299,10 @@ impl SniffOrchestrator {
             } else {
                 match analyzer.summarize(&entries).await {
                     Ok(summary) => {
-                        self.last_ai_analysis.lock().unwrap().insert(source_key.clone(), Utc::now());
+                        self.last_ai_analysis
+                            .lock()
+                            .unwrap()
+                            .insert(source_key.clone(), Utc::now());
                         summary
                     }
                     Err(err) => {
