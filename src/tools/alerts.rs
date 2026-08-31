@@ -92,7 +92,11 @@ mod tests {
 
         create_alert(
             &pool,
-            Alert::new(AlertType::AnomalyDetected, AlertSeverity::Critical, "Test alert"),
+            Alert::new(
+                AlertType::AnomalyDetected,
+                AlertSeverity::Critical,
+                "Test alert",
+            ),
         )
         .await
         .unwrap();
@@ -109,7 +113,11 @@ mod tests {
 
         create_alert(
             &pool,
-            Alert::new(AlertType::AnomalyDetected, AlertSeverity::Critical, "Critical alert"),
+            Alert::new(
+                AlertType::AnomalyDetected,
+                AlertSeverity::Critical,
+                "Critical alert",
+            ),
         )
         .await
         .unwrap();

@@ -28,11 +28,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new(
-        pool: DbPool,
-        ip_ban_config: IpBanConfig,
-        detectors: DetectorRegistry,
-    ) -> Self {
+    pub fn new(pool: DbPool, ip_ban_config: IpBanConfig, detectors: DetectorRegistry) -> Self {
         Self {
             pool,
             ip_ban_config,
@@ -85,11 +81,7 @@ mod tests {
     fn make_registry() -> ToolRegistry {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
-        ToolRegistry::new(
-            pool,
-            IpBanConfig::from_env(),
-            DetectorRegistry::default(),
-        )
+        ToolRegistry::new(pool, IpBanConfig::from_env(), DetectorRegistry::default())
     }
 
     #[test]

@@ -235,7 +235,10 @@ impl SniffOrchestrator {
             // 4. Analyze
             log::debug!("Step 4: analyzing {} entries...", entries.len());
             let mut summary = if self.config.ai_tools_enabled {
-                match analyzer.summarize_with_tools(&entries, &self.tool_registry).await {
+                match analyzer
+                    .summarize_with_tools(&entries, &self.tool_registry)
+                    .await
+                {
                     Ok(summary) => summary,
                     Err(err) => {
                         log::warn!(

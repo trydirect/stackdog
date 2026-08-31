@@ -26,7 +26,10 @@ pub fn definitions() -> Vec<ToolDef> {
 pub fn execute_run_detectors(detectors: &DetectorRegistry, args: &str) -> ToolResult {
     let lines: Vec<String> = match serde_json::from_str::<serde_json::Value>(args) {
         Ok(v) => match v["lines"].as_array() {
-            Some(arr) => arr.iter().filter_map(|l| l.as_str().map(String::from)).collect(),
+            Some(arr) => arr
+                .iter()
+                .filter_map(|l| l.as_str().map(String::from))
+                .collect(),
             None => return ToolResult::error("run_detectors", "Missing 'lines' array"),
         },
         Err(e) => return ToolResult::error("run_detectors", &format!("Invalid args: {}", e)),

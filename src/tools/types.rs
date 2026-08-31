@@ -59,11 +59,7 @@ impl ToolResult {
 }
 
 /// Helper to build a ToolDef with JSON Schema parameters
-pub fn tool_def(
-    name: &str,
-    description: &str,
-    parameters: serde_json::Value,
-) -> ToolDef {
+pub fn tool_def(name: &str, description: &str, parameters: serde_json::Value) -> ToolDef {
     ToolDef {
         tool_type: "function".into(),
         function: FunctionDef {

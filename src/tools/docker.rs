@@ -57,10 +57,15 @@ pub fn execute_list_containers(postures: &[ContainerPosture]) -> ToolResult {
 pub fn execute_get_container_posture(postures: &[ContainerPosture], args: &str) -> ToolResult {
     let name = match serde_json::from_str::<serde_json::Value>(args) {
         Ok(v) => v["container_name"].as_str().unwrap_or("").to_string(),
-        Err(e) => return ToolResult::error("get_container_posture", &format!("Invalid args: {}", e)),
+        Err(e) => {
+            return ToolResult::error("get_container_posture", &format!("Invalid args: {}", e))
+        }
     };
 
-    match postures.iter().find(|p| p.name == name || p.container_id == name) {
+    match postures
+        .iter()
+        .find(|p| p.name == name || p.container_id == name)
+    {
         Some(p) => ToolResult::success(
             "get_container_posture",
             serde_json::json!({

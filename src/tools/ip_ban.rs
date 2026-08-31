@@ -72,21 +72,15 @@ pub fn execute_check_ip_status(pool: &DbPool, args: &str) -> ToolResult {
 
     let ip = &args.ip_address;
 
-    let blocked = active_block_for_ip(pool, ip)
-        .ok()
-        .flatten()
-        .map(|r| serde_json::json!({
+    let blocked = active_block_for_ip(pool, ip).ok().flatten().map(|r| {
+        serde_json::json!({
             "blocked_until": r.blocked_until,
             "reason": r.reason,
-        }));
+        })
+    });
 
-    let offenses = find_recent_offenses(
-        pool,
-        ip,
-        "sniff",
-        Utc::now() - Duration::hours(24),
-    )
-    .unwrap_or_default();
+    let offenses = find_recent_offenses(pool, ip, "sniff", Utc::now() - Duration::hours(24))
+        .unwrap_or_default();
 
     let result = serde_json::json!({
         "ip_address": ip,
@@ -134,7 +128,11 @@ pub fn execute_ban_ip(pool: &DbPool, config: &IpBanConfig, args: &str) -> ToolRe
         return ToolResult::error("ban_ip", &format!("Failed to mark blocked: {}", e));
     }
 
-    log::info!("IP {} banned via AI tool until {}", args.ip_address, blocked_until);
+    log::info!(
+        "IP {} banned via AI tool until {}",
+        args.ip_address,
+        blocked_until
+    );
 
     let cli_cmd = format!(
         "stackdog ban-ip {} --duration {}s --reason \"{}\"",

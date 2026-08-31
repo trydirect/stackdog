@@ -571,10 +571,10 @@ impl LogAnalyzer for OpenAiAnalyzer {
                 {
                     "role": "system",
                     "content": "You are a log analysis assistant. Analyze logs and return structured JSON. Be concise — limit summary to 1-2 sentences, max 5 key events, max 5 anomalies.\n\n\
-When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
-- \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
-- \"stackdog firewall add --public-ports 8080/tcp\"\n\
-Only include suggested_action when there is a clear, actionable mitigation."
+        When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
+        - \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
+        - \"stackdog firewall add --public-ports 8080/tcp\"\n\
+        Only include suggested_action when there is a clear, actionable mitigation."
                 },
                 {
                     "role": "user",
@@ -663,11 +663,11 @@ Only include suggested_action when there is a clear, actionable mitigation."
         let system_msg = serde_json::json!({
             "role": "system",
             "content": "You are a log analysis assistant. Analyze logs and return structured JSON. Be concise — limit summary to 1-2 sentences, max 5 key events, max 5 anomalies.\n\n\
-When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
-- \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
-- \"stackdog firewall add --public-ports 8080/tcp\"\n\
-Only include suggested_action when there is a clear, actionable mitigation.\n\n\
-You have access to tools. Use them to gather context before making decisions — check if an IP is already banned, inspect container posture, or run detectors on suspicious lines."
+        When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
+        - \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
+        - \"stackdog firewall add --public-ports 8080/tcp\"\n\
+        Only include suggested_action when there is a clear, actionable mitigation.\n\n\
+        You have access to tools. Use them to gather context before making decisions — check if an IP is already banned, inspect container posture, or run detectors on suspicious lines."
         });
 
         let user_msg = serde_json::json!({
@@ -718,8 +718,8 @@ You have access to tools. Use them to gather context before making decisions —
                 .await
                 .context("Failed to read AI API response body")?;
 
-            let completion: ChatCompletionResponse = serde_json::from_str(&raw_body)
-                .context("Failed to parse AI API response")?;
+            let completion: ChatCompletionResponse =
+                serde_json::from_str(&raw_body).context("Failed to parse AI API response")?;
 
             let choice = match completion.choices.into_iter().next() {
                 Some(c) => c,
