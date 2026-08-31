@@ -10,10 +10,61 @@ use std::env;
 
 use crate::alerting::alert::{Alert, AlertSeverity};
 
+/// Display name used on Slack messages unless overridden
+const DEFAULT_SLACK_USERNAME: &str = "Stackdog";
+
+/// Avatar used on Slack messages unless overridden
+const DEFAULT_SLACK_ICON_URL: &str = "https://stackdog.stacker.my/stackdog-mark.png";
+
+/// Avatar used when the primary icon host is unreachable
+const FALLBACK_SLACK_ICON_URL: &str =
+    "https://raw.githubusercontent.com/trydirect/stackdog/main/website/public/stackdog-mark.png";
+
+/// Cached result of the icon-host probe, resolved once per process
+static RESOLVED_SLACK_ICON_URL: tokio::sync::OnceCell<&'static str> =
+    tokio::sync::OnceCell::const_new();
+
+/// Pick the default avatar, falling back to the GitHub copy when the primary
+/// host does not answer.
+///
+/// The probe runs from this host rather than from Slack's fetchers, so it is a
+/// proxy for reachability, not a guarantee. It runs at most once per process.
+async fn resolve_default_slack_icon_url() -> &'static str {
+    *RESOLVED_SLACK_ICON_URL
+        .get_or_init(|| async {
+            let reachable = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .map(|client| client.head(DEFAULT_SLACK_ICON_URL).send())
+                .ok();
+
+            match reachable {
+                Some(request) => match request.await {
+                    Ok(resp) if resp.status().is_success() => DEFAULT_SLACK_ICON_URL,
+                    Ok(resp) => {
+                        log::debug!(
+                            "Slack icon host returned {}, using fallback avatar",
+                            resp.status()
+                        );
+                        FALLBACK_SLACK_ICON_URL
+                    }
+                    Err(e) => {
+                        log::debug!("Slack icon host unreachable ({e}), using fallback avatar");
+                        FALLBACK_SLACK_ICON_URL
+                    }
+                },
+                None => FALLBACK_SLACK_ICON_URL,
+            }
+        })
+        .await
+}
+
 /// Notification configuration
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
     slack_webhook: Option<String>,
+    slack_username: Option<String>,
+    slack_icon_url: Option<String>,
     smtp_host: Option<String>,
     smtp_port: Option<u16>,
     smtp_user: Option<String>,
@@ -29,6 +80,8 @@ impl NotificationConfig {
     pub fn new() -> Self {
         Self {
             slack_webhook: None,
+            slack_username: None,
+            slack_icon_url: None,
             smtp_host: None,
             smtp_port: None,
             smtp_user: None,
@@ -44,6 +97,8 @@ impl NotificationConfig {
     pub fn from_env() -> Self {
         Self {
             slack_webhook: env::var("STACKDOG_SLACK_WEBHOOK_URL").ok(),
+            slack_username: env::var("STACKDOG_SLACK_USERNAME").ok(),
+            slack_icon_url: env::var("STACKDOG_SLACK_ICON_URL").ok(),
             smtp_host: env::var("STACKDOG_SMTP_HOST").ok(),
             smtp_port: env::var("STACKDOG_SMTP_PORT")
                 .ok()
@@ -72,6 +127,18 @@ impl NotificationConfig {
     /// Set Slack webhook
     pub fn with_slack_webhook(mut self, url: String) -> Self {
         self.slack_webhook = Some(url);
+        self
+    }
+
+    /// Set the display name shown on Slack messages
+    pub fn with_slack_username(mut self, username: String) -> Self {
+        self.slack_username = Some(username);
+        self
+    }
+
+    /// Set the avatar image used on Slack messages
+    pub fn with_slack_icon_url(mut self, url: String) -> Self {
+        self.slack_icon_url = Some(url);
         self
     }
 
@@ -126,6 +193,29 @@ impl NotificationConfig {
     /// Get Slack webhook
     pub fn slack_webhook(&self) -> Option<&str> {
         self.slack_webhook.as_deref()
+    }
+
+    /// Get the Slack display name, falling back to the Stackdog default
+    pub fn slack_username(&self) -> &str {
+        self.slack_username
+            .as_deref()
+            .unwrap_or(DEFAULT_SLACK_USERNAME)
+    }
+
+    /// Get the Slack avatar URL, falling back to the Stackdog mark
+    pub fn slack_icon_url(&self) -> &str {
+        self.slack_icon_url
+            .as_deref()
+            .unwrap_or(DEFAULT_SLACK_ICON_URL)
+    }
+
+    /// Resolve the Slack avatar, probing the primary host when no explicit
+    /// override is configured.
+    pub async fn resolved_slack_icon_url(&self) -> &str {
+        match self.slack_icon_url.as_deref() {
+            Some(url) => url,
+            None => resolve_default_slack_icon_url().await,
+        }
     }
 
     /// Get SMTP host
@@ -306,7 +396,8 @@ impl NotificationChannel {
         config: &NotificationConfig,
     ) -> Result<NotificationResult> {
         if let Some(webhook_url) = config.slack_webhook() {
-            let payload = build_slack_message(alert, config);
+            let icon_url = config.resolved_slack_icon_url().await;
+            let payload = build_slack_message_with_icon(alert, config, icon_url);
             log::debug!("Sending Slack notification to webhook");
             log::trace!("Slack payload: {}", payload);
 
@@ -553,6 +644,15 @@ pub fn severity_to_slack_color(severity: AlertSeverity) -> &'static str {
 
 /// Build Slack message payload
 pub fn build_slack_message(alert: &Alert, config: &NotificationConfig) -> String {
+    build_slack_message_with_icon(alert, config, config.slack_icon_url())
+}
+
+/// Build Slack message payload with an explicit avatar URL
+pub fn build_slack_message_with_icon(
+    alert: &Alert,
+    config: &NotificationConfig,
+    icon_url: &str,
+) -> String {
     let mut fields = vec![
         serde_json::json!({"title": "Severity", "value": alert.severity().to_string(), "short": true}),
         serde_json::json!({"title": "Status", "value": alert.status().to_string(), "short": true}),
@@ -563,7 +663,9 @@ pub fn build_slack_message(alert: &Alert, config: &NotificationConfig) -> String
     }
 
     serde_json::json!({
-        "text": "🐕 Stackdog Security Alert",
+        "username": config.slack_username(),
+        "icon_url": icon_url,
+        "text": "Stackdog Security Alert",
         "attachments": [{
             "color": severity_to_slack_color(alert.severity()),
             "title": format!("{:?}", alert.alert_type()),
@@ -785,6 +887,66 @@ mod tests {
         assert_eq!(json["severity"], "High");
         assert_eq!(json["message"], "Webhook test");
         assert_eq!(json["instance_label"], "prod-eu-1");
+    }
+
+    #[test]
+    fn test_build_slack_message_uses_default_identity() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(&alert, &NotificationConfig::default());
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["username"], DEFAULT_SLACK_USERNAME);
+        assert_eq!(json["icon_url"], DEFAULT_SLACK_ICON_URL);
+    }
+
+    #[test]
+    fn test_build_slack_message_honors_custom_identity() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default()
+                .with_slack_username("Stackdog prod".into())
+                .with_slack_icon_url("https://example.test/mark.png".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["username"], "Stackdog prod");
+        assert_eq!(json["icon_url"], "https://example.test/mark.png");
+    }
+
+    #[tokio::test]
+    async fn test_resolved_slack_icon_url_short_circuits_on_override() {
+        let config =
+            NotificationConfig::default().with_slack_icon_url("https://x.test/a.png".into());
+        assert_eq!(
+            config.resolved_slack_icon_url().await,
+            "https://x.test/a.png"
+        );
+    }
+
+    #[test]
+    fn test_build_slack_message_with_icon_uses_given_url() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message_with_icon(
+            &alert,
+            &NotificationConfig::default(),
+            FALLBACK_SLACK_ICON_URL,
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["icon_url"], FALLBACK_SLACK_ICON_URL);
     }
 
     #[test]
