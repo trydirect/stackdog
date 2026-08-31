@@ -4,7 +4,7 @@
 //! that can run built-in detectors over log entries and emit structured
 //! anomalies that flow through the existing sniff/reporting pipeline.
 
-mod audits;
+pub mod audits;
 mod integrity;
 mod ml;
 

@@ -28,6 +28,23 @@ pub enum Command {
 
     /// Sniff and analyze logs from Docker containers and system sources
     Sniff(Box<SniffCommand>),
+
+    /// Ban an IP address immediately
+    BanIp(BanIpCommand),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BanIpCommand {
+    /// IPv4 address to ban
+    pub ip_address: String,
+
+    /// Ban duration (e.g. "30m", "1h", "2h", "24h")
+    #[arg(long, default_value = "30m")]
+    pub duration: String,
+
+    /// Reason for the ban
+    #[arg(long, default_value = "manual ban")]
+    pub reason: String,
 }
 
 #[derive(Args, Debug, Clone)]

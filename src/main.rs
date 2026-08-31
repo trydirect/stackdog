@@ -24,6 +24,7 @@ use actix_web::{web, App, HttpServer};
 use clap::Parser;
 use cli::{Cli, Command};
 use stackdog::database::{create_pool, init_database};
+use stackdog::ip_ban::IpBanConfig;
 use stackdog::sniff;
 use std::{env, io};
 use tracing::{info, Level};
@@ -90,6 +91,10 @@ async fn main() -> io::Result<()> {
                 email_recipients: sniff.email_recipients.as_deref(),
             });
             run_sniff(config).await
+        }
+        Some(Command::BanIp(ban)) => {
+            let duration_secs = parse_duration(&ban.duration);
+            run_ban_ip(&ban.ip_address, duration_secs, &ban.reason).await
         }
         // Default: serve (backward compatible)
         Some(Command::Serve) | None => run_serve().await,
@@ -253,4 +258,53 @@ fn parse_bool_env(name: &str, default: bool) -> bool {
             _ => None,
         })
         .unwrap_or(default)
+}
+
+fn parse_duration(s: &str) -> u64 {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix("m") {
+        num.parse::<u64>().unwrap_or(30) * 60
+    } else if let Some(num) = s.strip_suffix("h") {
+        num.parse::<u64>().unwrap_or(1) * 3600
+    } else if let Some(num) = s.strip_suffix("s") {
+        num.parse::<u64>().unwrap_or(0)
+    } else {
+        s.parse::<u64>().unwrap_or(1800)
+    }
+}
+
+async fn run_ban_ip(ip: &str, duration_secs: u64, reason: &str) -> io::Result<()> {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into());
+    let pool = create_pool(&database_url).map_err(io::Error::other)?;
+    init_database(&pool).map_err(io::Error::other)?;
+
+    let config = IpBanConfig::from_env();
+    let result = stackdog::tools::ip_ban::execute_ban_ip(
+        &pool,
+        &config,
+        &serde_json::json!({
+            "ip_address": ip,
+            "reason": reason,
+            "duration_secs": duration_secs,
+        })
+        .to_string(),
+    );
+
+    if result.content.contains("error") {
+        eprintln!("Error: {}", result.content);
+        std::process::exit(1);
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&result.content)
+        .map_err(|e| io::Error::other(format!("Failed to parse result: {}", e)))?;
+
+    println!("IP banned successfully");
+    println!("  IP:            {}", parsed["ip_address"]);
+    println!("  Blocked until: {}", parsed["blocked_until"]);
+    println!("  Duration:      {}s", parsed["duration_secs"]);
+    if let Some(cmd) = parsed["cli_command"].as_str() {
+        println!("  CLI:           {}", cmd);
+    }
+
+    Ok(())
 }

@@ -65,6 +65,9 @@ pub mod api;
 // Log sniffing
 pub mod sniff;
 
+// AI tool-use
+pub mod tools;
+
 // Re-export commonly used types
 pub use events::security::{AlertEvent, ContainerEvent, NetworkEvent, SecurityEvent};
 pub use events::syscall::{SyscallEvent, SyscallType};
