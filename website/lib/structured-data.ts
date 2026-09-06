@@ -23,7 +23,7 @@ export function buildHomeStructuredData(faqEntries: FaqEntry[]) {
         name: 'Stackdog Security',
         applicationCategory: 'SecurityApplication',
         operatingSystem: 'Linux',
-        softwareVersion: '0.2.2',
+        softwareVersion: '0.2.4',
         url: SITE_URL,
         downloadUrl: GITHUB_URL,
         description:
@@ -40,10 +40,13 @@ export function buildHomeStructuredData(faqEntries: FaqEntry[]) {
         featureList: [
           'eBPF-based syscall monitoring with <5% CPU overhead',
           'AI-assisted log sniffing via OpenAI, Ollama, and Candle workflows',
-          'Threat scoring with 10+ built-in signatures',
-          'Automated nftables or iptables response',
-          'Container quarantine',
-          'Slack, email, and webhook alerts'
+          'AI tool use: the analyzer can check IPs, inspect containers, and ban attackers mid-investigation',
+          'Threat scoring with 25+ built-in detectors',
+          'ML behavioral drift detection with Isolation Forest',
+          'File integrity monitoring, configuration audits, and Docker posture checks',
+          'Automated nftables or iptables response with automatic unban',
+          'Container quarantine and outbound spam containment',
+          'Slack, email, and webhook alerts with severity filtering and deduplication'
         ],
         offers: {
           '@type': 'Offer',

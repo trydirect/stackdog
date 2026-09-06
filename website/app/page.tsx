@@ -7,11 +7,13 @@ import {
   Boxes,
   Cpu,
   Network,
+  FileSearch,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
   Workflow,
+  Wrench,
   Zap
 } from 'lucide-react';
 import CopyButton from '@/components/CopyButton';
@@ -23,8 +25,8 @@ const installCommand =
 
 const stats = [
   { value: '<5%', label: 'CPU overhead' },
-  { value: '10+', label: 'Threat signatures' },
-  { value: '5', label: 'Alert channels' },
+  { value: '25+', label: 'Built-in detectors' },
+  { value: '4', label: 'Alert channels' },
   { value: 'Real-time', label: 'Detection loop' }
 ];
 
@@ -38,8 +40,14 @@ const features = [
   {
     name: 'AI/ML Detection',
     description:
-      'Combine Candle-powered anomaly detection with OpenAI and Ollama-compatible analysis workflows.',
+      'An Isolation Forest model learns your normal log patterns and flags behavioral drift, alongside OpenAI, Ollama, and Candle-backed analysis.',
     icon: Bot
+  },
+  {
+    name: 'AI Tool Use',
+    description:
+      'The analyzer can call back into Stackdog mid-investigation to check IP reputation, inspect container posture, review recent alerts, and ban attackers.',
+    icon: Wrench
   },
   {
     name: 'Log Sniffing & Analysis',
@@ -50,13 +58,19 @@ const features = [
   {
     name: 'Automated Response',
     description:
-      'Trigger nftables or iptables actions and quarantine suspicious containers before damage spreads.',
+      'Ban attacking IPs through nftables or iptables, quarantine suspicious containers, and release bans automatically when the ban window expires.',
     icon: ShieldCheck
+  },
+  {
+    name: 'Posture & Integrity Audits',
+    description:
+      'Track file integrity against SQLite baselines, audit SSH, sudoers, and Docker daemon settings, and flag privileged containers or exposed Docker sockets.',
+    icon: FileSearch
   },
   {
     name: 'Multi-Channel Alerts',
     description:
-      'Route incidents to Slack, email, or webhooks for fast collaboration across SecOps and platform teams.',
+      'Route incidents to Slack, email, or webhooks, filtered by minimum severity and deduplicated so a standing misconfiguration does not page you all day.',
     icon: BellRing
   },
   {
@@ -121,7 +135,12 @@ const faqEntries = [
   {
     question: 'How does Stackdog respond to threats?',
     answer:
-      'Stackdog can score events, notify responders, push Slack or webhook alerts, update nftables or iptables rules, and quarantine suspicious containers as part of an automated response pipeline.'
+      'Stackdog can score events, notify responders, push Slack or webhook alerts, update nftables or iptables rules, and quarantine suspicious containers as part of an automated response pipeline. Bans expire on their own, and you can also ban an address by hand with stackdog ban-ip.'
+  },
+  {
+    question: 'How does Stackdog avoid alert fatigue?',
+    answer:
+      'Alerts are filtered by a minimum severity you set, and repeats of the same finding are suppressed for a configurable window (six hours by default). Standing misconfigurations are re-detected on every pass, so without this they would notify all day. Each alert also names the real source, such as the container or log file it came from.'
   },
   {
     question: 'Is Stackdog open source?',
@@ -180,7 +199,7 @@ export default function HomePage() {
         <div className="site-container">
           <div className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
             <div>
-              <span className="eyebrow">Stackdog Security v0.2.2</span>
+              <span className="eyebrow">Stackdog Security v0.2.4</span>
               <h1 className="mt-6 max-w-4xl text-balance text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
                 AI-Powered Security for Docker Containers &amp; Linux Servers
               </h1>

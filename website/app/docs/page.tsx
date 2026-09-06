@@ -8,7 +8,7 @@ import { buildDocsStructuredData, toJsonLd } from '@/lib/structured-data';
 const installCurl =
   'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash';
 const installPinned =
-  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.2';
+  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.4';
 const installDocker = `docker run --rm -it \\
   --name stackdog \\
   --network host \\
@@ -75,7 +75,25 @@ const envRows = [
   ['STACKDOG_IP_BAN_BAN_TIME_SECS', '1800', 'How long (seconds) an IP stays banned. Default 30 min.'],
   ['STACKDOG_IP_BAN_FIND_TIME_SECS', '300', 'Lookback window (seconds) for counting offenses.'],
   ['STACKDOG_NOTIFICATION_MIN_SEVERITY', 'info', 'Minimum severity for alert notifications. Options: info, low, medium, high, critical.'],
-  ['STACKDOG_NOTIFY_IP_BAN_ACTIONS', 'true', 'Send notifications when an IP is banned or released.']
+  ['STACKDOG_NOTIFY_IP_BAN_ACTIONS', 'true', 'Send notifications when an IP is banned or released.'],
+  ['STACKDOG_NOTIFY_QUARANTINE_ACTIONS', 'true', 'Send notifications when a container is quarantined or released.'],
+  ['STACKDOG_ALERT_DEDUP_WINDOW_SECS', '21600', 'How long the same finding stays suppressed before alerting again. Default 6 hours.'],
+  ['STACKDOG_NOTIFICATION_LABEL', 'prod-eu-1', 'Instance label added to every alert so you can tell hosts apart.'],
+  ['STACKDOG_SLACK_USERNAME', 'Stackdog', 'Display name on Slack messages (legacy webhooks or chat:write.customize).'],
+  ['STACKDOG_SLACK_ICON_URL', 'https://stackdog.stacker.my/stackdog-mark.png', 'Avatar image for Slack messages.'],
+  ['STACKDOG_AI_TIMEOUT_SECS', '300', 'Timeout for AI requests. 0 disables it for very slow local models.'],
+  ['STACKDOG_AI_MAX_TOKENS', '2048', 'Response token ceiling. 0 lets the provider decide.'],
+  ['STACKDOG_AI_COOLDOWN_SECS', '300', 'Minimum gap between AI calls for the same source, to limit token spend.'],
+  ['STACKDOG_AI_TOOLS_ENABLED', 'true', 'Let the analyzer call Stackdog tools (check IPs, list containers, ban) during analysis.'],
+  ['STACKDOG_FIM_PATHS', '/etc/passwd,/etc/ssh', 'Files or directories tracked for integrity drift against a SQLite baseline.'],
+  ['STACKDOG_SCA_PATHS', '/etc/ssh/sshd_config,/etc/sudoers', 'Config files audited for insecure settings.'],
+  ['STACKDOG_PACKAGE_INVENTORY_PATHS', '/var/lib/dpkg/status', 'Package inventories scanned for legacy versions.'],
+  ['STACKDOG_TRUSTED_CONTAINERS', 'redis,postgres', 'Container names skipped during Docker posture checks.'],
+  ['STACKDOG_TRUSTED_PROXY_RANGES', '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16', 'CIDRs treated as proxies, so the real client IP is taken from X-Forwarded-For.'],
+  ['STACKDOG_IP_BAN_UNBAN_CHECK_INTERVAL_SECS', '60', 'How often expired bans are checked and released.'],
+  ['STACKDOG_MAIL_GUARD_ENABLED', 'true', 'Watch web containers for outbound spam bursts and quarantine offenders.'],
+  ['STACKDOG_MAIL_GUARD_TARGETS', 'wordpress,php,apache', 'Container name patterns the mail guard watches.'],
+  ['STACKDOG_MAIL_GUARD_ALLOWLIST', 'postfix,mailu', 'Container name patterns exempt from the mail guard.']
 ] as const;
 
 export const metadata: Metadata = {
@@ -232,8 +250,9 @@ export default function DocsPage() {
               <div>
                 <h2 className="text-3xl font-semibold text-white">CLI Reference</h2>
                 <p className="mt-4 max-w-3xl text-base leading-8 text-slate-400">
-                  Stackdog currently centers on two commands: <code>serve</code> for the HTTP API and
-                  <code> sniff</code> for continuous or one-shot log analysis.
+                  Stackdog centers on three commands: <code>serve</code> for the HTTP API,
+                  <code> sniff</code> for continuous or one-shot log analysis, and
+                  <code> ban-ip</code> for manual firewall action.
                 </p>
               </div>
 
@@ -262,6 +281,21 @@ export default function DocsPage() {
               <div>
                 <h3 className="mb-4 text-xl font-semibold text-white">sniff options</h3>
                 <DocsTable headers={['Option', 'Description']} rows={sniffOptions} />
+              </div>
+
+              <div className="panel p-6">
+                <h3 className="text-xl font-semibold text-white">stackdog ban-ip</h3>
+                <p className="mt-3 text-sm leading-7 text-slate-400">
+                  Bans an IPv4 address immediately through the same firewall backend the automated
+                  response uses. Handy when you spot an attacker before Stackdog does.
+                </p>
+                <pre className="mt-4">
+                  <code>stackdog ban-ip 203.0.113.10 --duration 2h --reason &quot;manual ban&quot;</code>
+                </pre>
+                <p className="mt-3 text-sm leading-7 text-slate-400">
+                  <code>--duration</code> accepts values like <code>30m</code>, <code>1h</code>, or
+                  <code> 24h</code> and defaults to <code>30m</code>.
+                </p>
               </div>
             </section>
 

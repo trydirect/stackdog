@@ -82,7 +82,7 @@ export default function Footer(_: FooterProps) {
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Release</h2>
             <ul className="mt-4 space-y-3 text-sm text-slate-400">
-              <li>Version 0.2.2</li>
+              <li>Version 0.2.4</li>
               <li>MIT Licensed</li>
               <li>
                 <a
