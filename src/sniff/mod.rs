@@ -69,7 +69,7 @@ impl SniffOrchestrator {
             notification_config =
                 notification_config.with_email_recipients(config.email_recipients.clone());
         }
-        let reporter = Reporter::new(notification_config);
+        let reporter = Reporter::new(notification_config, config.alert_dedup_window_secs);
         let ip_ban_config = IpBanConfig::from_env();
         let ip_ban = ip_ban_config
             .enabled

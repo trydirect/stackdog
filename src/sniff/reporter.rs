@@ -23,10 +23,14 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn new(notification_config: NotificationConfig) -> Self {
+    /// Build a reporter that suppresses repeats of the same finding for
+    /// `dedup_window_secs` (see `STACKDOG_ALERT_DEDUP_WINDOW_SECS`).
+    pub fn new(notification_config: NotificationConfig, dedup_window_secs: u64) -> Self {
         Self {
             notification_config,
-            deduplicator: RefCell::new(AlertDeduplicator::new(DedupConfig::default())),
+            deduplicator: RefCell::new(AlertDeduplicator::new(
+                DedupConfig::default().with_window_seconds(dedup_window_secs),
+            )),
         }
     }
 
@@ -254,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_report_no_anomalies() {
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![]);
         let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 0);
@@ -264,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_report_with_anomalies_sends_alerts() {
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![LogAnomaly {
             description: "High error rate".into(),
             severity: AnomalySeverity::High,
@@ -285,7 +289,7 @@ mod tests {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
 
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![]);
 
         let result = reporter.report(&summary, Some(&pool), None).await.unwrap();
@@ -302,7 +306,7 @@ mod tests {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
 
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![LogAnomaly {
             description: "Potential SQL injection probing detected".into(),
             severity: AnomalySeverity::High,
@@ -364,7 +368,7 @@ mod tests {
             "a6f2ec2d90294889".into(),
             "mailer".into(),
         );
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![LogAnomaly {
             description: "Multiple instances of EmptyEmailBodyError".into(),
             severity: AnomalySeverity::Critical,
@@ -396,7 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_report_multiple_anomalies() {
-        let reporter = Reporter::new(NotificationConfig::default());
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
         let summary = make_summary(vec![
             LogAnomaly {
                 description: "Error spike".into(),
@@ -426,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn test_reporter_new() {
         let config = NotificationConfig::default();
-        let reporter = Reporter::new(config);
+        let reporter = Reporter::new(config, 300);
         // Just ensure it constructs without error
         let summary = make_summary(vec![]);
         let result = reporter.report(&summary, None, None).await;
@@ -437,6 +441,7 @@ mod tests {
     async fn test_report_does_not_count_delivery_failures_as_sent() {
         let reporter = Reporter::new(
             NotificationConfig::default().with_slack_webhook("http://127.0.0.1:1".into()),
+            300,
         );
         let summary = make_summary(vec![LogAnomaly {
             description: "High error rate".into(),
