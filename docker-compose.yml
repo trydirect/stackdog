@@ -37,8 +37,10 @@ services:
     environment:
       # Resolved by the browser, so point these at an address it can reach.
       # Read at container start; no rebuild needed to change them.
-      STACKDOG_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
-      STACKDOG_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
+      # Empty values make the dashboard use the host it was opened from.
+      # Set STACKDOG_API_URL/STACKDOG_WS_URL for a separately hosted API.
+      STACKDOG_API_URL: ${STACKDOG_API_URL:-}
+      STACKDOG_WS_URL: ${STACKDOG_WS_URL:-}
     ports:
       - "${STACKDOG_UI_PORT:-3000}:80"
 

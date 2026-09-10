@@ -17,6 +17,12 @@ pub struct IpBanConfig {
     /// Meant for infrastructure whose loss takes the service down with it:
     /// load balancers, health checkers, VPN gateways, the office egress.
     pub allowlist_ranges: Vec<(Ipv4Addr, u8)>,
+    /// Ceiling on how many addresses may be blocked within a minute.
+    ///
+    /// A safety valve, not a policy: banning a dozen addresses in one second
+    /// means the log was misread, not that a dozen attackers arrived together.
+    /// Zero disables the ceiling.
+    pub max_bans_per_minute: u32,
 }
 
 impl IpBanConfig {
@@ -37,6 +43,7 @@ impl IpBanConfig {
             allowlist_ranges: parse_cidr_list(
                 &env::var("STACKDOG_IP_BAN_ALLOWLIST").unwrap_or_default(),
             ),
+            max_bans_per_minute: parse_u32_env("STACKDOG_IP_BAN_MAX_PER_MINUTE", 10),
         }
     }
 
@@ -135,6 +142,7 @@ mod tests {
             unban_check_interval_secs: 60,
             trusted_proxy_ranges: vec![],
             allowlist_ranges: parse_cidr_list("167.233.9.19,192.168.0.0/16"),
+            max_bans_per_minute: 10,
         };
 
         assert!(config.is_allowlisted(&"167.233.9.19".parse().unwrap()));

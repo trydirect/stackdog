@@ -418,14 +418,13 @@ impl SniffOrchestrator {
                 analyzer::AnomalySeverity::Critical => crate::alerting::AlertSeverity::Critical,
             };
 
-            // Try sample_line first, fall back to scanning entries
-            let mut ips = IpBanEngine::extract_ip_candidates(&anomaly.sample_line);
+            let ips = implicated_ips(anomaly);
             if ips.is_empty() {
-                for entry in entries {
-                    ips.extend(IpBanEngine::extract_ip_candidates(&entry.line));
-                }
-                ips.sort();
-                ips.dedup();
+                log::debug!(
+                    "No IP implicated by anomaly, skipping ban: {}",
+                    anomaly.description
+                );
+                continue;
             }
 
             for ip in ips {
@@ -462,7 +461,7 @@ impl SniffOrchestrator {
                 continue;
             };
 
-            for ip in IpBanEngine::extract_ip_candidates(&entry.line) {
+            for ip in accused_ips_in_auth_line(&entry.line) {
                 let target_ip = resolve_ban_target(&ip, &entry.line, engine);
                 if !is_public_routable_ipv4(&target_ip) {
                     continue;
@@ -578,27 +577,32 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         }
     }
 
+    if !crate::alerting::notifications::env_flag_enabled("STACKDOG_IP_BAN_FROM_AI_FINDINGS", true) {
+        return false;
+    }
+
+    // Phrases specific enough to name an attack. Deliberately excluded:
+    // "frequent access", "targeting", "possible attack", "rejected connection",
+    // "scanning" — an analyzer writing free text produces those about ordinary
+    // traffic, and each one banned real visitors.
     let description = anomaly.description.to_ascii_lowercase();
     [
         "brute-force",
+        "brute force",
         "failed ssh login",
         "failed login attempts",
         "authentication failures",
         "invalid user",
         "path traversal",
         "credential scanning",
+        "credential stuffing",
         "sensitive file access",
-        "sql injection probing",
+        "sql injection",
         "ssrf",
         "metadata access",
-        // AI-generated attack descriptions
-        "rejected connection",
+        "webshell",
+        "exploit attempt",
         "coordinated attack",
-        "possible attack",
-        "targeting",
-        "probing",
-        "scanning",
-        "frequent access",
     ]
     .iter()
     .any(|needle| description.contains(needle))
@@ -658,6 +662,59 @@ fn source_path(source: &discovery::LogSource, entry: Option<&reader::LogEntry>) 
             )
             .then(|| source.path_or_id.clone())
         })
+}
+
+/// The address an auth-log line accuses, if it says so unambiguously.
+///
+/// sshd writes "Failed password for root from 1.2.3.4 port 22" and PAM writes
+/// "rhost=1.2.3.4"; both name the client. When a line carries several addresses
+/// and none of those markers, there is no way to tell the attacker from a
+/// bystander, so nobody is accused.
+fn accused_ips_in_auth_line(line: &str) -> Vec<String> {
+    let lower = line.to_ascii_lowercase();
+
+    for marker in [" from ", "rhost=", "client="] {
+        if let Some(position) = lower.find(marker) {
+            let tail = &line[position + marker.len()..];
+            if let Some(ip) = IpBanEngine::extract_ip_candidates(tail).into_iter().next() {
+                return vec![ip];
+            }
+        }
+    }
+
+    let candidates = IpBanEngine::extract_ip_candidates(line);
+    if candidates.len() == 1 {
+        return candidates;
+    }
+
+    if candidates.len() > 1 {
+        log::debug!(
+            "Auth line names {} addresses and no client marker, accusing none",
+            candidates.len()
+        );
+    }
+    Vec::new()
+}
+
+/// Addresses an anomaly actually accuses.
+///
+/// Only the evidence counts: the line that triggered the finding, and the
+/// description, which the analyzer often writes as "Probing attempts detected
+/// from IP 1.2.3.4".
+///
+/// This deliberately has no fallback. Harvesting every address in the batch
+/// when the evidence names none used to ban whole containers' worth of
+/// visitors at once, all with the same reason and the same sample line — one
+/// finding, punishment for everybody who appeared in the log. An unattributed
+/// finding is worth an alert, not a ban.
+fn implicated_ips(anomaly: &analyzer::LogAnomaly) -> Vec<String> {
+    let mut ips = IpBanEngine::extract_ip_candidates(&anomaly.sample_line);
+    if ips.is_empty() {
+        ips = IpBanEngine::extract_ip_candidates(&anomaly.description);
+    }
+    ips.sort();
+    ips.dedup();
+    ips
 }
 
 fn is_public_routable_ipv4(ip: &str) -> bool {
@@ -1015,6 +1072,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
         let source = LogSource::new(
@@ -1145,6 +1203,163 @@ mod tests {
         }));
     }
 
+    fn anomaly_with(description: &str, sample_line: &str) -> analyzer::LogAnomaly {
+        analyzer::LogAnomaly {
+            description: description.into(),
+            severity: analyzer::AnomalySeverity::Critical,
+            sample_line: sample_line.into(),
+            detector_id: None,
+            detector_family: None,
+            confidence: None,
+            suggested_action: None,
+        }
+    }
+
+    #[test]
+    fn test_accused_ips_in_auth_line_picks_the_client() {
+        assert_eq!(
+            accused_ips_in_auth_line(
+                "Failed password for root from 203.0.113.9 port 22 ssh2 on 198.51.100.1"
+            ),
+            vec!["203.0.113.9".to_string()],
+            "the server's own address must not be accused alongside the client"
+        );
+        assert_eq!(
+            accused_ips_in_auth_line("pam_unix(sshd:auth): rhost=203.0.113.9 user=root"),
+            vec!["203.0.113.9".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_accused_ips_in_auth_line_abstains_when_ambiguous() {
+        assert!(accused_ips_in_auth_line("relay 203.0.113.9 -> 198.51.100.4 failed").is_empty());
+        assert!(accused_ips_in_auth_line("authentication failure").is_empty());
+    }
+
+    #[test]
+    fn test_should_auto_ban_ignores_ordinary_traffic_wording() {
+        for description in [
+            "Frequent access from IP 203.0.113.9",
+            "Rejected connection observed",
+            "Possible attack surface noted",
+            "Scanning of the log directory completed",
+            "Client targeting the checkout endpoint",
+        ] {
+            let anomaly = anomaly_with(description, "GET /health 200");
+            assert!(
+                !should_auto_ban(&anomaly),
+                "{description:?} must not be grounds for a ban"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_auto_ban_still_acts_on_named_attacks() {
+        for description in [
+            "Brute-force login attempts detected",
+            "SQL injection attempt against /search",
+            "Path traversal attempt observed",
+        ] {
+            let anomaly = anomaly_with(description, "GET /?q=1");
+            assert!(should_auto_ban(&anomaly), "{description:?} should ban");
+        }
+    }
+
+    #[test]
+    fn test_implicated_ips_uses_the_evidence() {
+        let anomaly = anomaly_with("Probing attempts detected", "x-real-ip: 132.243.165.112");
+        assert_eq!(
+            implicated_ips(&anomaly),
+            vec!["132.243.165.112".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_implicated_ips_falls_back_to_the_description() {
+        let anomaly = anomaly_with(
+            "Probing attempts detected from IP 132.243.165.112.",
+            "unhandled error: Rejection(MethodNotAllowed)",
+        );
+        assert_eq!(
+            implicated_ips(&anomaly),
+            vec!["132.243.165.112".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_implicated_ips_accuses_nobody_without_evidence() {
+        // Previously this harvested every address in the batch, banning each
+        // one for a finding that named none of them.
+        let anomaly = anomaly_with(
+            "Repeated internal errors observed",
+            "unhandled error: Rejection(MethodNotAllowed)",
+        );
+        assert!(implicated_ips(&anomaly).is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_apply_ip_ban_spares_bystanders_when_evidence_names_nobody() {
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                max_retries: 1,
+                find_time_secs: 300,
+                ban_time_secs: 1800,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
+            },
+        );
+
+        // Unrelated visitors, present in the batch but accused of nothing.
+        let entries: Vec<reader::LogEntry> = ["130.12.180.77", "93.185.165.134"]
+            .iter()
+            .map(|ip| reader::LogEntry {
+                source_id: "s1".into(),
+                timestamp: Utc::now(),
+                line: format!("{ip} - - GET /health 200"),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect();
+
+        let summary = analyzer::LogSummary {
+            source_id: "s1".into(),
+            period_start: Utc::now(),
+            period_end: Utc::now(),
+            total_entries: entries.len(),
+            summary_text: "test".into(),
+            error_count: 0,
+            warning_count: 0,
+            key_events: vec![],
+            anomalies: vec![anomaly_with(
+                "Repeated internal errors observed",
+                "unhandled error: Rejection(MethodNotAllowed)",
+            )],
+        };
+        let source = discovery::LogSource::new(
+            discovery::LogSourceType::DockerContainer,
+            "cd7d713f81d1".into(),
+            "docker:toolchain".into(),
+        );
+
+        orchestrator
+            .apply_ip_ban(&entries, &source, &summary, &engine)
+            .await
+            .unwrap();
+
+        for ip in ["130.12.180.77", "93.185.165.134"] {
+            assert!(
+                active_block_for_ip(&orchestrator.pool, ip)
+                    .unwrap()
+                    .is_none(),
+                "{ip} was banned for someone else's finding"
+            );
+        }
+    }
+
     #[actix_rt::test]
     async fn test_apply_ip_ban_records_offense_metadata_from_anomaly() {
         let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
@@ -1158,6 +1373,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
         let summary = make_summary(
@@ -1205,6 +1421,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
         let summary = make_summary(
@@ -1278,6 +1495,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
         let summary = make_detector_summary(
@@ -1316,6 +1534,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
         let summary = make_summary(

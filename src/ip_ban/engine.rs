@@ -29,11 +29,47 @@ pub struct OffenseInput {
 pub struct IpBanEngine {
     pool: DbPool,
     config: IpBanConfig,
+    /// Timestamps of recent blocks, for the per-minute ceiling.
+    recent_blocks: std::sync::Mutex<std::collections::VecDeque<DateTime<Utc>>>,
 }
 
 impl IpBanEngine {
     pub fn new(pool: DbPool, config: IpBanConfig) -> Self {
-        Self { pool, config }
+        Self {
+            pool,
+            config,
+            recent_blocks: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+
+    /// Whether another address may be blocked right now.
+    ///
+    /// A burst of blocks is far more likely to be a misread log than a crowd of
+    /// attackers arriving in the same second, and the cost of the two mistakes
+    /// is not symmetric: a missed ban is an alert nobody acted on, a wrong ban
+    /// is a locked-out customer. The ceiling holds the damage to a handful.
+    fn ban_budget_available(&self, now: DateTime<Utc>) -> bool {
+        if self.config.max_bans_per_minute == 0 {
+            return true;
+        }
+
+        let mut recent = match self.recent_blocks.lock() {
+            Ok(recent) => recent,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        while recent
+            .front()
+            .is_some_and(|stamp| now - *stamp > Duration::seconds(60))
+        {
+            recent.pop_front();
+        }
+
+        if recent.len() as u32 >= self.config.max_bans_per_minute {
+            return false;
+        }
+
+        recent.push_back(now);
+        true
     }
 
     pub fn config(&self) -> &IpBanConfig {
@@ -220,6 +256,18 @@ impl IpBanEngine {
         offense_count: u32,
         now: chrono::DateTime<Utc>,
     ) -> Result<()> {
+        if !self.ban_budget_available(now) {
+            log::warn!(
+                "Ban ceiling of {}/min reached, not blocking {} ({}). This usually means log \
+                 parsing implicated the wrong addresses; raise STACKDOG_IP_BAN_MAX_PER_MINUTE \
+                 only once you have checked the findings.",
+                self.config.max_bans_per_minute,
+                offense.ip_address,
+                offense.reason
+            );
+            return Ok(());
+        }
+
         #[cfg(target_os = "linux")]
         self.with_firewall_backend(|backend| backend.block_ip(&offense.ip_address))?;
 
@@ -326,7 +374,9 @@ impl IpBanEngine {
     }
 
     fn push_ip_candidate(candidates: &mut Vec<String>, line: &str, start: usize, end: usize) {
-        let token = &line[start..end];
+        // Sentence punctuation rides along: "from IP 1.2.3.4." tokenizes with a
+        // trailing dot, which is not a valid address.
+        let token = line[start..end].trim_matches('.');
         if !is_ipv4(token) {
             return;
         }
@@ -427,6 +477,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
 
@@ -483,6 +534,14 @@ mod tests {
         assert!(
             !candidates.contains(&"122.0.0.0".to_string()),
             "a Chrome version must not be read as a client address: {candidates:?}"
+        );
+    }
+
+    #[actix_rt::test]
+    async fn test_extract_ip_candidates_ignores_sentence_punctuation() {
+        assert_eq!(
+            IpBanEngine::extract_ip_candidates("Probing detected from IP 132.243.165.112."),
+            vec!["132.243.165.112".to_string()]
         );
     }
 
@@ -546,6 +605,61 @@ mod tests {
     }
 
     #[actix_rt::test]
+    async fn test_ban_budget_stops_a_burst() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(
+            pool,
+            IpBanConfig {
+                enabled: true,
+                max_retries: 1,
+                find_time_secs: 300,
+                ban_time_secs: 1800,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![],
+                max_bans_per_minute: 3,
+            },
+        );
+        let now = Utc::now();
+
+        assert!(engine.ban_budget_available(now));
+        assert!(engine.ban_budget_available(now));
+        assert!(engine.ban_budget_available(now));
+        assert!(
+            !engine.ban_budget_available(now),
+            "a burst past the ceiling must be refused"
+        );
+
+        // The window slides: a minute later the budget is back.
+        assert!(engine.ban_budget_available(now + Duration::seconds(61)));
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_budget_can_be_disabled() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(
+            pool,
+            IpBanConfig {
+                enabled: true,
+                max_retries: 1,
+                find_time_secs: 300,
+                ban_time_secs: 1800,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
+            },
+        );
+        let now = Utc::now();
+
+        for _ in 0..50 {
+            assert!(engine.ban_budget_available(now));
+        }
+    }
+
+    #[actix_rt::test]
     async fn test_allowlisted_ip_is_never_recorded_or_banned() {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
@@ -559,6 +673,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: parse_cidr_list("167.233.9.19,10.0.0.0/8"),
+                max_bans_per_minute: 0,
             },
         );
 
@@ -602,6 +717,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
 
@@ -676,6 +792,7 @@ mod tests {
                 unban_check_interval_secs: 60,
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
             },
         );
 

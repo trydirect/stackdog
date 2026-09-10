@@ -78,6 +78,8 @@ const envRows = [
   ['STACKDOG_IP_BAN_BAN_TIME_SECS', '1800', 'How long (seconds) an IP stays banned. Default 30 min.'],
   ['STACKDOG_IP_BAN_FIND_TIME_SECS', '300', 'Lookback window (seconds) for counting offenses.'],
   ['STACKDOG_IP_BAN_ALLOWLIST', '167.233.9.19,10.0.0.0/8', 'Addresses or CIDRs that are never banned. Use it for load balancers and health checkers.'],
+  ['STACKDOG_IP_BAN_MAX_PER_MINUTE', '10', 'Ceiling on blocks per minute, so a misread log cannot lock out a crowd. 0 disables it.'],
+  ['STACKDOG_IP_BAN_FROM_AI_FINDINGS', 'true', 'Whether AI-written findings may trigger bans. Detector-backed findings are unaffected.'],
   ['STACKDOG_NOTIFICATION_MIN_SEVERITY', 'info', 'Minimum severity for alert notifications. Options: info, low, medium, high, critical.'],
   ['STACKDOG_NOTIFY_IP_BAN_ACTIONS', 'true', 'Send notifications when an IP is banned or released.'],
   ['STACKDOG_NOTIFY_QUARANTINE_ACTIONS', 'true', 'Send notifications when a container is quarantined or released.'],

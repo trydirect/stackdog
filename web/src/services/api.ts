@@ -3,11 +3,11 @@ import { SecurityStatus, Threat, ThreatStatistics } from '../types/security';
 import { Alert, AlertStats, AlertFilter } from '../types/alerts';
 import { Container, QuarantineRequest } from '../types/containers';
 import { resolveApiPort } from './ports';
-import { readEnv } from './env';
+import { defaultApiUrl, readEnv } from './env';
 
 const env = readEnv();
 const apiPort = resolveApiPort(env);
-const API_BASE_URL = env.REACT_APP_API_URL || `http://localhost:${apiPort}/api`;
+const API_BASE_URL = env.REACT_APP_API_URL || defaultApiUrl(apiPort);
 
 class ApiService {
   public api: AxiosInstance;

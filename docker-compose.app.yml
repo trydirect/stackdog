@@ -65,8 +65,10 @@ services:
       # Read at container start, not compiled in: change the host and restart,
       # no rebuild. These are resolved by the browser, so "localhost" only
       # works when the dashboard is opened on this machine.
-      STACKDOG_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
-      STACKDOG_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
+      # Empty values make the dashboard use the host it was opened from.
+      # Set STACKDOG_API_URL/STACKDOG_WS_URL for a separately hosted API.
+      STACKDOG_API_URL: ${STACKDOG_API_URL:-}
+      STACKDOG_WS_URL: ${STACKDOG_WS_URL:-}
     depends_on:
       - stackdog
     restart: unless-stopped

@@ -45,3 +45,26 @@ export function mergeEnv(buildTime: StackdogEnv, runtime: StackdogEnv): Stackdog
 
   return merged;
 }
+
+/** Use the dashboard host when no explicit API endpoint was configured. */
+export function defaultApiUrl(port: string): string {
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? 'https:'
+    : 'http:';
+  const hostname = typeof window !== 'undefined' && window.location.hostname
+    ? window.location.hostname
+    : 'localhost';
+
+  return `${protocol}//${hostname}:${port}/api`;
+}
+
+export function defaultWebSocketUrl(port: string): string {
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? 'wss:'
+    : 'ws:';
+  const hostname = typeof window !== 'undefined' && window.location.hostname
+    ? window.location.hostname
+    : 'localhost';
+
+  return `${protocol}//${hostname}:${port}/ws`;
+}

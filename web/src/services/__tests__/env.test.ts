@@ -1,4 +1,4 @@
-import { mergeEnv, readEnv } from '../env';
+import { defaultApiUrl, defaultWebSocketUrl, mergeEnv, readEnv } from '../env';
 
 describe('mergeEnv', () => {
   it('lets runtime values override what was compiled in', () => {
@@ -36,5 +36,12 @@ describe('readEnv', () => {
 
   it('survives a missing config.js', () => {
     expect(() => readEnv()).not.toThrow();
+  });
+});
+
+describe('browser endpoint defaults', () => {
+  it('uses the dashboard host instead of localhost', () => {
+    expect(defaultApiUrl('5000')).toBe('http://localhost:5000/api');
+    expect(defaultWebSocketUrl('5000')).toBe('ws://localhost:5000/ws');
   });
 });

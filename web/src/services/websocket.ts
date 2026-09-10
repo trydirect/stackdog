@@ -1,5 +1,5 @@
 import { resolveApiPort } from './ports';
-import { readEnv } from './env';
+import { defaultWebSocketUrl, readEnv } from './env';
 
 type WebSocketEvent = 
   | 'threat:detected'
@@ -23,7 +23,7 @@ export class WebSocketService {
   constructor(url?: string) {
     const env = readEnv();
     const apiPort = resolveApiPort(env);
-    this.url = url || env.REACT_APP_WS_URL || `ws://localhost:${apiPort}/ws`;
+    this.url = url || env.REACT_APP_WS_URL || defaultWebSocketUrl(apiPort);
   }
 
   connect(): Promise<void> {
