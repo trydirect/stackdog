@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import AlertPanel from '../AlertPanel';
+import { alertIdFromHash } from '../AlertPanel';
 import apiService from '../../services/api';
 import webSocketService from '../../services/websocket';
 
@@ -165,5 +166,22 @@ describe('AlertPanel Component', () => {
       expect(apiService.acknowledgeAlert).toHaveBeenCalledWith('alert-1');
       expect(apiService.acknowledgeAlert).toHaveBeenCalledWith('alert-2');
     });
+  });
+});
+
+describe('alertIdFromHash', () => {
+  it('reads the id out of a notification deep link', () => {
+    expect(alertIdFromHash('#alerts/abc-123')).toBe('abc-123');
+    expect(alertIdFromHash('alerts/abc-123')).toBe('abc-123');
+  });
+
+  it('decodes ids that were percent-encoded in the URL', () => {
+    expect(alertIdFromHash('#alerts/a%2Fb')).toBe('a/b');
+  });
+
+  it('ignores hashes that are not alert links', () => {
+    expect(alertIdFromHash('#alerts')).toBeNull();
+    expect(alertIdFromHash('#containers')).toBeNull();
+    expect(alertIdFromHash('')).toBeNull();
   });
 });

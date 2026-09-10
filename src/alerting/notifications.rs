@@ -63,6 +63,7 @@ async fn resolve_default_slack_icon_url() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
     slack_webhook: Option<String>,
+    ui_url: Option<String>,
     slack_username: Option<String>,
     slack_icon_url: Option<String>,
     smtp_host: Option<String>,
@@ -80,6 +81,7 @@ impl NotificationConfig {
     pub fn new() -> Self {
         Self {
             slack_webhook: None,
+            ui_url: None,
             slack_username: None,
             slack_icon_url: None,
             smtp_host: None,
@@ -97,6 +99,10 @@ impl NotificationConfig {
     pub fn from_env() -> Self {
         Self {
             slack_webhook: env::var("STACKDOG_SLACK_WEBHOOK_URL").ok(),
+            ui_url: env::var("STACKDOG_UI_URL")
+                .ok()
+                .map(|url| url.trim().to_string())
+                .filter(|url| !url.is_empty()),
             slack_username: env::var("STACKDOG_SLACK_USERNAME").ok(),
             slack_icon_url: env::var("STACKDOG_SLACK_ICON_URL").ok(),
             smtp_host: env::var("STACKDOG_SMTP_HOST").ok(),
@@ -128,6 +134,18 @@ impl NotificationConfig {
     pub fn with_slack_webhook(mut self, url: String) -> Self {
         self.slack_webhook = Some(url);
         self
+    }
+
+    /// Set the dashboard base URL used to build links back to an alert
+    pub fn with_ui_url(mut self, url: String) -> Self {
+        self.ui_url = Some(url);
+        self
+    }
+
+    /// Link to an alert in the dashboard, when a base URL is configured
+    pub fn alert_url(&self, alert_id: &str) -> Option<String> {
+        let base = self.ui_url.as_deref()?.trim_end_matches('/');
+        Some(format!("{base}/#alerts/{alert_id}"))
     }
 
     /// Set the display name shown on Slack messages
@@ -553,7 +571,8 @@ pub async fn dispatch_stored_alert(
     alert: &crate::database::models::Alert,
     config: &NotificationConfig,
 ) -> Result<usize> {
-    let mut runtime_alert = Alert::new(alert.alert_type, alert.severity, alert.message.clone());
+    let mut runtime_alert = Alert::new(alert.alert_type, alert.severity, alert.message.clone())
+        .with_id(alert.id.clone());
 
     if let Some(metadata) = &alert.metadata {
         if let Some(container_id) = &metadata.container_id {
@@ -661,6 +680,13 @@ pub fn build_slack_message_with_icon(
     if let Some(label) = config.notification_label() {
         fields.push(serde_json::json!({"title": "Instance", "value": label, "short": true}));
     }
+    if let Some(url) = config.alert_url(alert.id()) {
+        fields.push(serde_json::json!({
+            "title": "Details",
+            "value": format!("<{url}|Open in Stackdog>"),
+            "short": true
+        }));
+    }
 
     serde_json::json!({
         "username": config.slack_username(),
@@ -686,6 +712,8 @@ pub fn build_webhook_payload(alert: &Alert, config: &NotificationConfig) -> Stri
         "status": alert.status().to_string(),
         "metadata": alert.metadata(),
         "instance_label": config.notification_label(),
+        "alert_id": alert.id(),
+        "details_url": config.alert_url(alert.id()),
     })
     .to_string()
 }
@@ -702,7 +730,10 @@ fn build_email_text(alert: &Alert, config: &NotificationConfig) -> String {
         alert.status(),
         alert.timestamp().to_rfc3339(),
         alert.message(),
-    )
+    ) + &config
+        .alert_url(alert.id())
+        .map(|url| format!("\nDetails: {url}\n"))
+        .unwrap_or_default()
 }
 
 fn build_email_html(alert: &Alert, config: &NotificationConfig) -> String {
@@ -717,7 +748,10 @@ fn build_email_html(alert: &Alert, config: &NotificationConfig) -> String {
         alert.status(),
         alert.timestamp().to_rfc3339(),
         alert.message(),
-    )
+    ) + &config
+        .alert_url(alert.id())
+        .map(|url| format!("<p><a href=\"{url}\">Open in Stackdog</a></p>"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -729,6 +763,7 @@ mod tests {
 
     fn clear_notification_env() {
         env::remove_var("STACKDOG_SLACK_WEBHOOK_URL");
+        env::remove_var("STACKDOG_UI_URL");
         env::remove_var("STACKDOG_WEBHOOK_URL");
         env::remove_var("STACKDOG_SMTP_HOST");
         env::remove_var("STACKDOG_SMTP_PORT");
@@ -920,6 +955,60 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["username"], "Stackdog prod");
         assert_eq!(json["icon_url"], "https://example.test/mark.png");
+    }
+
+    #[tokio::test]
+    async fn test_alert_url_is_absent_without_a_dashboard_url() {
+        assert_eq!(NotificationConfig::default().alert_url("a1"), None);
+    }
+
+    #[tokio::test]
+    async fn test_alert_url_points_at_the_dashboard_deep_link() {
+        let config = NotificationConfig::default().with_ui_url("https://stackdog.example/".into());
+        assert_eq!(
+            config.alert_url("a1").as_deref(),
+            Some("https://stackdog.example/#alerts/a1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_slack_message_links_back_to_the_alert() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThresholdExceeded,
+            AlertSeverity::High,
+            "Blocked IP 198.51.100.7".to_string(),
+        )
+        .with_id("a1".into());
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default().with_ui_url("https://stackdog.example".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+
+        assert!(fields.iter().any(|field| {
+            field["title"] == "Details"
+                && field["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("https://stackdog.example/#alerts/a1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_keeps_the_stored_alert_id() {
+        // A regenerated id would make the link point at an alert that does not
+        // exist.
+        let stored = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::ThresholdExceeded,
+            AlertSeverity::High,
+            "Blocked IP 198.51.100.7".to_string(),
+        );
+        let runtime = Alert::new(stored.alert_type, stored.severity, stored.message.clone())
+            .with_id(stored.id.clone());
+
+        assert_eq!(runtime.id(), stored.id);
     }
 
     #[tokio::test]

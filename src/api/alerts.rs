@@ -41,6 +41,31 @@ pub async fn get_alerts(pool: web::Data<DbPool>, query: web::Query<AlertQuery>) 
     }
 }
 
+/// Get one alert by id
+///
+/// GET /api/alerts/{id}
+///
+/// Backs the link carried in notifications, so an operator can open the alert
+/// that fired without paging through the list.
+pub async fn get_alert(pool: web::Data<DbPool>, path: web::Path<String>) -> impl Responder {
+    let id = path.into_inner();
+
+    match db_list_alerts(&pool, AlertFilter::default()).await {
+        Ok(alerts) => match alerts.into_iter().find(|alert| alert.id == id) {
+            Some(alert) => HttpResponse::Ok().json(AlertResponse::from(alert)),
+            None => HttpResponse::NotFound().json(serde_json::json!({
+                "error": format!("No alert with id {}", id)
+            })),
+        },
+        Err(e) => {
+            log::error!("Failed to load alert {}: {}", id, e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to load alert"
+            }))
+        }
+    }
+}
+
 /// Get alert statistics
 ///
 /// GET /api/alerts/stats
@@ -192,6 +217,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api/alerts")
             .route("", web::get().to(get_alerts))
             .route("/stats", web::get().to(get_alert_stats))
+            // Declared after /stats so the literal path wins over {id}.
+            .route("/{id}", web::get().to(get_alert))
             .route("/{id}/acknowledge", web::post().to(acknowledge_alert))
             .route("/{id}/resolve", web::post().to(resolve_alert))
             .route("/seed", web::post().to(seed_sample_alerts)), // For testing
@@ -201,8 +228,59 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::create_pool;
+    use crate::alerting::alert::{AlertSeverity, AlertType};
+    use crate::database::{create_pool, init_database};
     use actix_web::{test, App};
+
+    #[actix_rt::test]
+    async fn test_get_alert_by_id_round_trips_and_404s() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let stored = crate::database::models::Alert::new(
+            AlertType::ThresholdExceeded,
+            AlertSeverity::High,
+            "Blocked IP 198.51.100.7".to_string(),
+        );
+        let id = stored.id.clone();
+        crate::database::create_alert(&pool, stored).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool))
+                .configure(configure_routes),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri(&format!("/api/alerts/{id}"))
+            .to_request();
+        let body: serde_json::Value = test::call_and_read_body_json(&app, req).await;
+        assert_eq!(body["message"], "Blocked IP 198.51.100.7");
+
+        let req = test::TestRequest::get()
+            .uri("/api/alerts/does-not-exist")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    #[actix_rt::test]
+    async fn test_stats_route_wins_over_the_id_route() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool))
+                .configure(configure_routes),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/alerts/stats")
+            .to_request();
+        let body: serde_json::Value = test::call_and_read_body_json(&app, req).await;
+        assert!(body.get("totalCount").is_some() || body.get("total_count").is_some());
+    }
 
     #[actix_rt::test]
     async fn test_get_alerts_empty() {

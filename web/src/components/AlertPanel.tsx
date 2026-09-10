@@ -7,6 +7,12 @@ import './AlertPanel.css';
 
 const ITEMS_PER_PAGE = 10;
 
+/** Read an alert id out of a "#alerts/{id}" location hash. */
+export const alertIdFromHash = (hash: string): string | null => {
+  const match = /^#?alerts\/(.+)$/.exec(hash);
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
 const AlertPanel: React.FC = () => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [stats, setStats] = useState<AlertStats | null>(null);
@@ -27,6 +33,40 @@ const AlertPanel: React.FC = () => {
       webSocketService.disconnect();
     };
   }, [filter]);
+
+  // Deep link: notifications carry #alerts/{id}, which opens that alert's
+  // details directly instead of leaving the operator to hunt through the list.
+  useEffect(() => {
+    const openFromHash = () => {
+      const id = alertIdFromHash(window.location.hash);
+      if (!id) {
+        setShowModal(false);
+        return;
+      }
+      const alert = alerts.find(a => a.id === id);
+      if (alert) {
+        setSelectedAlert(alert);
+        setShowModal(true);
+      }
+    };
+
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+    return () => window.removeEventListener('hashchange', openFromHash);
+  }, [alerts]);
+
+  const openDetails = (alert: Alert) => {
+    setSelectedAlert(alert);
+    setShowModal(true);
+    window.location.hash = `alerts/${alert.id}`;
+  };
+
+  const closeDetails = () => {
+    setShowModal(false);
+    if (alertIdFromHash(window.location.hash)) {
+      window.location.hash = 'alerts';
+    }
+  };
 
   const loadAlerts = async () => {
     try {
@@ -288,10 +328,7 @@ const AlertPanel: React.FC = () => {
                         variant="outline-primary"
                         size="sm"
                         className="ms-1"
-                        onClick={() => {
-                          setSelectedAlert(alert);
-                          setShowModal(true);
-                        }}
+                        onClick={() => openDetails(alert)}
                       >
                         Details
                       </Button>
@@ -328,7 +365,7 @@ const AlertPanel: React.FC = () => {
       </Card.Body>
 
       {/* Alert Detail Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)}>
+      <Modal show={showModal} onHide={closeDetails}>
         <Modal.Header closeButton>
           <Modal.Title>Alert Details</Modal.Title>
         </Modal.Header>
@@ -350,7 +387,7 @@ const AlertPanel: React.FC = () => {
           )}
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowModal(false)}>
+          <Button variant="secondary" onClick={closeDetails}>
             Close
           </Button>
         </Modal.Footer>

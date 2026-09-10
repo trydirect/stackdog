@@ -152,6 +152,15 @@ impl Alert {
     }
 
     /// Get alert ID
+    /// Keep an existing identity instead of the generated one.
+    ///
+    /// Used when replaying a stored alert through the notification channels: a
+    /// fresh id would make the link in the message point at nothing.
+    pub fn with_id(mut self, id: String) -> Self {
+        self.id = id;
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
