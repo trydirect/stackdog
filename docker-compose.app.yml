@@ -8,11 +8,49 @@ services:
     network_mode: host
     cap_add:
       - NET_ADMIN
+    restart: unless-stopped
+    labels:
+      # Keeps Stackdog from reading its own logs and reporting its own errors
+      # as findings.
+      com.trydirect.stackdog.ignore: "true"
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 5000
       DATABASE_URL: /data/stackdog.db
-      STACKDOG_SNIFF_INTERVAL: 30
+
+      # Dashboard base URL, so notifications can link to the alert that fired.
+      # Must be the address a browser can reach, not "localhost", when the
+      # dashboard is opened from another machine.
+      STACKDOG_UI_URL: ${STACKDOG_UI_URL:-http://localhost:3000}
+
+      # Log sniffing
+      STACKDOG_SNIFF_INTERVAL: ${STACKDOG_SNIFF_INTERVAL:-30}
+      STACKDOG_LOG_SOURCES: ${STACKDOG_LOG_SOURCES:-/var/log/syslog,/var/log/auth.log}
+
+      # AI analysis. Leave the key empty to fall back to the local pattern
+      # analyzer instead of calling out.
+      STACKDOG_AI_PROVIDER: ${STACKDOG_AI_PROVIDER:-openai}
+      STACKDOG_AI_API_URL: ${STACKDOG_AI_API_URL:-https://api.openai.com/v1}
+      STACKDOG_AI_MODEL: ${STACKDOG_AI_MODEL:-gpt-4o-mini}
+      STACKDOG_AI_API_KEY: ${STACKDOG_AI_API_KEY:-}
+
+      # Alert delivery
+      STACKDOG_SLACK_WEBHOOK_URL: ${STACKDOG_SLACK_WEBHOOK_URL:-}
+      STACKDOG_NOTIFICATION_LABEL: ${STACKDOG_NOTIFICATION_LABEL:-}
+      STACKDOG_NOTIFICATION_MIN_SEVERITY: ${STACKDOG_NOTIFICATION_MIN_SEVERITY:-info}
+      # Standing misconfigurations are re-detected every pass; without a window
+      # they alert all day. 6h.
+      STACKDOG_ALERT_DEDUP_WINDOW_SECS: ${STACKDOG_ALERT_DEDUP_WINDOW_SECS:-21600}
+
+      # IP banning. Put load balancers and health checkers in the allowlist:
+      # banning them takes the service down. Public-facing proxies belong in
+      # TRUSTED_PROXY_RANGES too, so the real client is banned instead of the
+      # proxy itself.
+      STACKDOG_IP_BAN_ALLOWLIST: ${STACKDOG_IP_BAN_ALLOWLIST:-}
+      STACKDOG_TRUSTED_PROXY_RANGES: ${STACKDOG_TRUSTED_PROXY_RANGES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+
+      # Containers skipped during Docker posture checks
+      STACKDOG_TRUSTED_CONTAINERS: ${STACKDOG_TRUSTED_CONTAINERS:-}
     volumes:
       - stackdog-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -22,13 +60,20 @@ services:
       context: .
       dockerfile: docker/ui/Dockerfile
       args:
-        REACT_APP_API_URL: http://localhost:5000/api
-        REACT_APP_WS_URL: ws://localhost:5000/ws
+        # Baked into the bundle at build time and resolved by the browser, so
+        # "localhost" only works when the dashboard is opened on this host.
+        # One host for both, so the API and the socket cannot drift apart.
+        # Rebuild the image after changing it.
+        REACT_APP_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
+        REACT_APP_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
     container_name: stackdog-ui
     depends_on:
       - stackdog
+    restart: unless-stopped
+    labels:
+      com.trydirect.stackdog.ignore: "true"
     ports:
-      - "3000:80"
+      - "${STACKDOG_UI_PORT:-3000}:80"
 
 volumes:
   stackdog-data:
