@@ -194,6 +194,33 @@ pub fn find_recent_offenses(
     Ok(offenses)
 }
 
+/// Recent offense rows for an address across every source type.
+///
+/// `find_recent_offenses` narrows to one source; this is for callers that want
+/// the whole picture for an address, such as the AI's `check_ip_status`.
+pub fn recent_offenses_for_ip(
+    pool: &DbPool,
+    ip_address: &str,
+    since: DateTime<Utc>,
+) -> Result<Vec<IpOffenseRecord>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            id, ip_address, source_type, container_id, offense_count,
+            first_seen, last_seen, blocked_until, status, reason, metadata
+         FROM ip_offenses
+         WHERE ip_address = ?1 AND last_seen >= ?2
+         ORDER BY last_seen DESC",
+    )?;
+
+    let rows = stmt.query_map(params![ip_address, since.to_rfc3339()], map_row)?;
+    let mut offenses = Vec::new();
+    for row in rows {
+        offenses.push(row?);
+    }
+    Ok(offenses)
+}
+
 pub fn active_block_for_ip(pool: &DbPool, ip_address: &str) -> Result<Option<IpOffenseRecord>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(

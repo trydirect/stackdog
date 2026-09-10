@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::database::connection::DbPool;
 use crate::database::repositories::offenses::{
-    active_block_for_ip, find_recent_offenses, mark_blocked, record_offense_occurrence,
+    active_block_for_ip, mark_blocked, recent_offenses_for_ip, record_offense_occurrence,
     NewIpOffense,
 };
 use crate::ip_ban::config::IpBanConfig;
@@ -80,14 +80,19 @@ pub fn execute_check_ip_status(pool: &DbPool, args: &str) -> ToolResult {
         })
     });
 
-    let offenses = find_recent_offenses(pool, ip, "sniff", Utc::now() - Duration::hours(24))
-        .unwrap_or_default();
+    // Every source type, not just "sniff": the ban check above spans them all,
+    // so narrowing here could report a banned address with no offenses.
+    let offenses =
+        recent_offenses_for_ip(pool, ip, Utc::now() - Duration::hours(24)).unwrap_or_default();
+    // The tally lives in offense_count; one row is one (ip, source_type) pair,
+    // not one detection.
+    let offense_count_24h: u32 = offenses.iter().map(|offense| offense.offense_count).sum();
 
     let result = serde_json::json!({
         "ip_address": ip,
         "banned": blocked.is_some(),
         "blocked_until": blocked.as_ref().and_then(|b| b.get("blocked_until").and_then(|v| v.as_str())),
-        "offense_count_24h": offenses.len(),
+        "offense_count_24h": offense_count_24h,
         "last_offense": offenses.first().map(|o| serde_json::json!({
             "reason": o.reason,
             "time": o.last_seen,
@@ -166,6 +171,50 @@ mod tests {
         let result = execute_check_ip_status(&pool, r#"{"ip_address": "1.2.3.4"}"#);
         assert!(result.content.contains("false"));
         assert!(result.content.contains("1.2.3.4"));
+    }
+
+    #[test]
+    fn test_check_ip_status_reports_the_tally_not_the_row_count() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let window_start = Utc::now() - Duration::hours(24);
+
+        // Seven detections from the sniffer plus one from the AI tool live in
+        // two rows; the model must be told eight, not two.
+        for _ in 0..7 {
+            record_offense_occurrence(
+                &pool,
+                &NewIpOffense {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ip_address: "9.9.9.9".into(),
+                    source_type: "sniff".into(),
+                    container_id: None,
+                    first_seen: Utc::now(),
+                    reason: "ssh".into(),
+                    metadata: None,
+                },
+                window_start,
+            )
+            .unwrap();
+        }
+        record_offense_occurrence(
+            &pool,
+            &NewIpOffense {
+                id: uuid::Uuid::new_v4().to_string(),
+                ip_address: "9.9.9.9".into(),
+                source_type: "ai-tool".into(),
+                container_id: None,
+                first_seen: Utc::now(),
+                reason: "manual".into(),
+                metadata: None,
+            },
+            window_start,
+        )
+        .unwrap();
+
+        let result = execute_check_ip_status(&pool, r#"{"ip_address": "9.9.9.9"}"#);
+        let payload: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(payload["offense_count_24h"], 8);
     }
 
     #[test]
