@@ -31,6 +31,7 @@
 
 ## 📖 Table of Contents
 
+- [Upgrading](#-upgrading)
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
 - [Features](#-features)
@@ -40,6 +41,97 @@
 - [Development](#-development)
 - [Contributing](#-contributing)
 - [License](#-license)
+
+---
+
+## ⬆️ Upgrading
+
+Notes for anyone moving from **v0.2.4 or earlier**. Nothing here needs to be run
+by hand, but two changes alter behaviour you may be relying on.
+
+### IP banning is stricter about who it accuses
+
+Earlier versions could ban addresses that were merely present in a log the
+analyzer was reading:
+
+- a finding whose sample line named no address caused **every** address in that
+  batch to be banned;
+- descriptions containing `frequent access`, `targeting`, `scanning`,
+  `possible attack` or `rejected connection` counted as grounds for a ban;
+- an auth-log line naming both client and server banned both;
+- browser versions in User-Agent strings (`Chrome/122.0.0.0`) parsed as
+  addresses and were banned as `122.0.0.0`.
+
+Bans now follow only the evidence: the sample line, then the description. A
+finding that accuses nobody raises an alert and stops there.
+
+Three settings are worth reviewing after upgrading:
+
+| Variable | Default | Why |
+|---|---|---|
+| `STACKDOG_IP_BAN_ALLOWLIST` | empty | Addresses never banned. Put load balancers, health checkers and this host's own public address here — banning them takes the service down. |
+| `STACKDOG_TRUSTED_PROXY_RANGES` | RFC1918 only | A public-facing proxy is **not** covered by the defaults, so its own address is banned instead of the client behind it. Add it as `<ip>/32`. |
+| `STACKDOG_IP_BAN_MAX_PER_MINUTE` | `10` | Ceiling on blocks per minute. A burst is more often a misread log than a crowd of attackers. `0` disables it. |
+
+To ban only on deterministic detectors and never on analyzer prose, set
+`STACKDOG_IP_BAN_FROM_AI_FINDINGS=false`.
+
+### The offense table is rewritten on first start
+
+`ip_offenses` held one row per detection with `offense_count` stuck at `1`, so
+the table grew with every hit and one ban left several rows behind — which is
+why a single expiry emitted several "Released IP ban" notifications.
+
+The first start after upgrading collapses each `(ip_address, source_type)` group
+into one row carrying the tally and the earliest sighting, keeping a live block
+over a released one, then enforces the layout with a unique index. It runs once,
+automatically, and is skipped on later starts.
+
+**Back up the database first** if its history matters to you:
+
+```bash
+docker exec <stackdog> sqlite3 /data/stackdog.db ".backup '/data/stackdog.pre-upgrade.db'"
+```
+
+### Stackdog no longer reads its own logs
+
+Running in Docker, it used to analyze its own output and report its own errors
+as findings. It now skips its own container. Detection works without
+configuration, but under `network_mode: host` the surest signal is a label:
+
+```yaml
+labels:
+  com.trydirect.stackdog.ignore: "true"
+```
+
+The same label excludes any other container you would rather not analyze.
+
+### The dashboard has its own image
+
+`trydirect/stackdog-ui:latest` is published alongside the backend. Pointing a
+dashboard service at `trydirect/stackdog:latest` starts a second copy of the
+backend instead, listening on 5000 while port 3000 maps to nothing.
+
+The API address is read from the environment at container start, so changing it
+is a restart rather than a rebuild:
+
+```yaml
+stackdog-ui:
+  image: trydirect/stackdog-ui:latest
+  environment:
+    STACKDOG_API_URL: http://<host>:5000/api
+    STACKDOG_WS_URL: ws://<host>:5000/ws
+  ports:
+    - "3000:80"
+```
+
+Build args named `REACT_APP_*` never reached the bundle in earlier versions, so
+any address configured that way was silently ignored.
+
+### Alerts can link back to the dashboard
+
+Set `STACKDOG_UI_URL` and every notification carries a link to the alert that
+fired. Left unset, notifications look as they did before.
 
 ---
 
