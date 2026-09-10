@@ -672,6 +672,9 @@ fn is_public_routable_ipv4(ip: &str) -> bool {
         || ip.is_broadcast()
         || ip.is_unspecified()
         || ip.octets()[0] == 0
+        // x.0.0.0 is a network address, never a client — and it is the shape a
+        // browser version leaves behind ("Chrome/122.0.0.0").
+        || ip.octets()[1..] == [0, 0, 0]
         || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
         || (ip.octets()[0] == 198 && ip.octets()[1] == 18)
         || (ip.octets()[0] == 198 && ip.octets()[1] == 19)
@@ -1240,10 +1243,12 @@ mod tests {
             .unwrap();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert_type.to_string(), "ThresholdExceeded");
-        assert_eq!(
-            alerts[0].message,
-            "Blocked IP 95.163.183.215 after repeated sniff offenses"
-        );
+        // The message must carry the evidence, not just the verdict.
+        let message = &alerts[0].message;
+        assert!(message.contains("Blocked IP 95.163.183.215"));
+        assert!(message.contains("after 2 sniff offenses"));
+        assert!(message.contains("/var/log/auth.log"));
+        assert!(message.contains("Failed password for root from 95.163.183.215"));
         assert_eq!(
             alerts[0]
                 .metadata

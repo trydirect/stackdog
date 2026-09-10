@@ -8,7 +8,7 @@ use crate::database::repositories::offenses::{
 use crate::database::{create_alert, DbPool};
 use crate::ip_ban::config::IpBanConfig;
 use anyhow::Result;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -78,7 +78,7 @@ impl IpBanEngine {
         )?;
 
         if offense_count >= self.config.max_retries {
-            self.block_ip(&offense, now).await?;
+            self.block_ip(&offense, offense_count, now).await?;
             return Ok(true);
         }
 
@@ -164,7 +164,62 @@ impl IpBanEngine {
         Ok(released)
     }
 
-    async fn block_ip(&self, offense: &OffenseInput, now: chrono::DateTime<Utc>) -> Result<()> {
+    /// Longest sample line kept in an alert message, so one enormous log line
+    /// cannot blow past a notification channel's size limit.
+    const SAMPLE_LIMIT: usize = 300;
+
+    /// Explain a ban in the alert itself: which file or container the evidence
+    /// came from, what triggered it, and the line that did.
+    ///
+    /// Without this the alert says only "Blocked IP X after repeated sniff
+    /// offenses", which is not enough to tell a real attacker from a parsing
+    /// mistake — and the offending address may appear nowhere in the logs an
+    /// operator would think to grep.
+    fn describe_ban(
+        offense: &OffenseInput,
+        offense_count: u32,
+        blocked_until: DateTime<Utc>,
+    ) -> String {
+        let mut message = format!(
+            "Blocked IP {} after {} {} offenses (until {})",
+            offense.ip_address,
+            offense_count,
+            offense.source_type,
+            blocked_until.to_rfc3339(),
+        );
+
+        if let Some(source_path) = &offense.source_path {
+            message.push_str(&format!(" — Source: {source_path}"));
+        } else if let Some(container_id) = &offense.container_id {
+            let short: String = container_id.chars().take(12).collect();
+            message.push_str(&format!(" — Source: container {short}"));
+        }
+
+        message.push_str(&format!(" | Reason: {}", offense.reason));
+
+        if let Some(sample_line) = &offense.sample_line {
+            let sample = sample_line.trim();
+            let sample: String = if sample.chars().count() > Self::SAMPLE_LIMIT {
+                sample
+                    .chars()
+                    .take(Self::SAMPLE_LIMIT)
+                    .chain("…".chars())
+                    .collect()
+            } else {
+                sample.to_string()
+            };
+            message.push_str(&format!(" | Sample: {sample}"));
+        }
+
+        message
+    }
+
+    async fn block_ip(
+        &self,
+        offense: &OffenseInput,
+        offense_count: u32,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         #[cfg(target_os = "linux")]
         self.with_firewall_backend(|backend| backend.block_ip(&offense.ip_address))?;
 
@@ -181,10 +236,7 @@ impl IpBanEngine {
             Alert::new(
                 AlertType::ThresholdExceeded,
                 offense.severity,
-                format!(
-                    "Blocked IP {} after repeated {} offenses",
-                    offense.ip_address, offense.source_type
-                ),
+                Self::describe_ban(offense, offense_count, blocked_until),
             )
             .with_metadata({
                 let mut metadata = AlertMetadata::default()
@@ -192,6 +244,25 @@ impl IpBanEngine {
                     .with_reason(offense.reason.clone());
                 if let Some(container_id) = &offense.container_id {
                     metadata = metadata.with_container_id(container_id.clone());
+                }
+                metadata
+                    .extra
+                    .insert("ip_address".into(), offense.ip_address.clone());
+                metadata
+                    .extra
+                    .insert("offense_count".into(), offense_count.to_string());
+                metadata
+                    .extra
+                    .insert("blocked_until".into(), blocked_until.to_rfc3339());
+                if let Some(source_path) = &offense.source_path {
+                    metadata
+                        .extra
+                        .insert("source_path".into(), source_path.clone());
+                }
+                if let Some(sample_line) = &offense.sample_line {
+                    metadata
+                        .extra
+                        .insert("sample_line".into(), sample_line.clone());
                 }
                 metadata
             }),
@@ -229,12 +300,48 @@ impl IpBanEngine {
         action(&backend)
     }
 
+    /// Pull IPv4 addresses out of a log line.
+    ///
+    /// Context matters: "Chrome/122.0.0.0" in a User-Agent tokenizes to a
+    /// perfectly valid dotted quad, and banning it blocks a real network on
+    /// behalf of a browser version number. A candidate is therefore rejected
+    /// when it continues an identifier — anything directly preceded by a slash,
+    /// letter, digit, hyphen or underscore.
     pub fn extract_ip_candidates(line: &str) -> Vec<String> {
-        line.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-            .filter(|part| !part.is_empty())
-            .filter(|part| is_ipv4(part))
-            .map(str::to_string)
-            .collect()
+        let mut candidates = Vec::new();
+        let mut token_start: Option<usize> = None;
+
+        for (index, ch) in line.char_indices() {
+            if ch.is_ascii_digit() || ch == '.' {
+                token_start.get_or_insert(index);
+            } else if let Some(start) = token_start.take() {
+                Self::push_ip_candidate(&mut candidates, line, start, index);
+            }
+        }
+        if let Some(start) = token_start {
+            Self::push_ip_candidate(&mut candidates, line, start, line.len());
+        }
+
+        candidates
+    }
+
+    fn push_ip_candidate(candidates: &mut Vec<String>, line: &str, start: usize, end: usize) {
+        let token = &line[start..end];
+        if !is_ipv4(token) {
+            return;
+        }
+
+        if let Some(previous) = line[..start].chars().next_back() {
+            if previous == '/'
+                || previous == '-'
+                || previous == '_'
+                || previous.is_ascii_alphanumeric()
+            {
+                return;
+            }
+        }
+
+        candidates.push(token.to_string());
     }
 
     /// Extract the real client IP from X-Forwarded-For / X-Real-IP headers in a
@@ -362,6 +469,80 @@ mod tests {
         let second = second.unwrap();
         assert!(second);
         assert!(active_block_for_ip(&pool, "192.0.2.44").unwrap().is_some());
+    }
+
+    #[actix_rt::test]
+    async fn test_extract_ip_candidates_skips_version_strings() {
+        let access_log = "203.0.113.9 - - [10/Sep/2026:07:17:00] \"GET / HTTP/1.1\" 200 \
+             \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\"";
+
+        let candidates = IpBanEngine::extract_ip_candidates(access_log);
+
+        assert!(candidates.contains(&"203.0.113.9".to_string()));
+        assert!(
+            !candidates.contains(&"122.0.0.0".to_string()),
+            "a Chrome version must not be read as a client address: {candidates:?}"
+        );
+    }
+
+    #[actix_rt::test]
+    async fn test_extract_ip_candidates_keeps_delimited_addresses() {
+        for line in [
+            "Failed password for root from 198.51.100.7 port 22",
+            "client=198.51.100.7,",
+            "[198.51.100.7]",
+            "X-Forwarded-For: 198.51.100.7",
+            "198.51.100.7 - - [10/Sep/2026]",
+        ] {
+            let candidates = IpBanEngine::extract_ip_candidates(line);
+            assert!(
+                candidates.contains(&"198.51.100.7".to_string()),
+                "missed the address in {line:?}"
+            );
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_describe_ban_names_the_evidence() {
+        let offense = OffenseInput {
+            ip_address: "198.51.100.7".into(),
+            source_type: "sniff".into(),
+            reason: "Failed ssh login".into(),
+            severity: AlertSeverity::High,
+            container_id: None,
+            source_path: Some("/var/log/auth.log".into()),
+            sample_line: Some("Failed password for root from 198.51.100.7 port 22".into()),
+        };
+        let until = "2026-09-10T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let message = IpBanEngine::describe_ban(&offense, 5, until);
+
+        assert!(message.contains("198.51.100.7"));
+        assert!(message.contains("after 5 sniff offenses"));
+        assert!(message.contains("/var/log/auth.log"));
+        assert!(message.contains("Failed ssh login"));
+        assert!(message.contains("Failed password for root"));
+    }
+
+    #[actix_rt::test]
+    async fn test_describe_ban_truncates_a_huge_sample() {
+        let offense = OffenseInput {
+            ip_address: "198.51.100.7".into(),
+            source_type: "sniff".into(),
+            reason: "Flood".into(),
+            severity: AlertSeverity::High,
+            container_id: Some("0f3b46ca0c16aaaaaaaa".into()),
+            source_path: None,
+            sample_line: Some("x".repeat(5_000)),
+        };
+        let until = "2026-09-10T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let message = IpBanEngine::describe_ban(&offense, 5, until);
+
+        assert!(message.contains("container 0f3b46ca0c16"));
+        assert!(message.chars().count() < 600, "message stayed unbounded");
+        assert!(message.ends_with('…'));
     }
 
     #[actix_rt::test]
