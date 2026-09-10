@@ -28,6 +28,20 @@ services:
       target: /var/run/docker.sock
       type: bind
     command: serve
+  stackdog-ui:
+    image: trydirect/stackdog-ui:latest
+    container_name: stackdog-ui
+    restart: unless-stopped
+    labels:
+      com.trydirect.stackdog.ignore: "true"
+    environment:
+      # Resolved by the browser, so point these at an address it can reach.
+      # Read at container start; no rebuild needed to change them.
+      STACKDOG_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
+      STACKDOG_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
+    ports:
+      - "${STACKDOG_UI_PORT:-3000}:80"
+
 volumes:
   stackdog-data:
     name: stackdog-data

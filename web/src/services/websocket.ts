@@ -1,4 +1,5 @@
 import { resolveApiPort } from './ports';
+import { readEnv } from './env';
 
 type WebSocketEvent = 
   | 'threat:detected'
@@ -8,17 +9,6 @@ type WebSocketEvent =
   | 'stats:updated';
 
 type EventHandler = (data: any) => void;
-type EnvLike = {
-  REACT_APP_WS_URL?: string;
-  APP_PORT?: string;
-  REACT_APP_API_PORT?: string;
-};
-
-declare global {
-  interface Window {
-    __STACKDOG_ENV__?: EnvLike;
-  }
-}
 
 export class WebSocketService {
   private ws: WebSocket | null = null;
@@ -31,8 +21,7 @@ export class WebSocketService {
   private failedInitialConnect = false;
 
   constructor(url?: string) {
-    const env = ((globalThis as { __STACKDOG_ENV__?: EnvLike }).__STACKDOG_ENV__ ??
-      {}) as EnvLike;
+    const env = readEnv();
     const apiPort = resolveApiPort(env);
     this.url = url || env.REACT_APP_WS_URL || `ws://localhost:${apiPort}/ws`;
   }

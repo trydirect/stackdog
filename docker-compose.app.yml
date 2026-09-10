@@ -59,14 +59,14 @@ services:
     build:
       context: .
       dockerfile: docker/ui/Dockerfile
-      args:
-        # Baked into the bundle at build time and resolved by the browser, so
-        # "localhost" only works when the dashboard is opened on this host.
-        # One host for both, so the API and the socket cannot drift apart.
-        # Rebuild the image after changing it.
-        REACT_APP_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
-        REACT_APP_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
+    image: trydirect/stackdog-ui:latest
     container_name: stackdog-ui
+    environment:
+      # Read at container start, not compiled in: change the host and restart,
+      # no rebuild. These are resolved by the browser, so "localhost" only
+      # works when the dashboard is opened on this machine.
+      STACKDOG_API_URL: http://${STACKDOG_API_HOST:-localhost:5000}/api
+      STACKDOG_WS_URL: ws://${STACKDOG_API_HOST:-localhost:5000}/ws
     depends_on:
       - stackdog
     restart: unless-stopped

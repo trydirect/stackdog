@@ -3,15 +3,9 @@ import { SecurityStatus, Threat, ThreatStatistics } from '../types/security';
 import { Alert, AlertStats, AlertFilter } from '../types/alerts';
 import { Container, QuarantineRequest } from '../types/containers';
 import { resolveApiPort } from './ports';
+import { readEnv } from './env';
 
-type EnvLike = {
-  REACT_APP_API_URL?: string;
-  APP_PORT?: string;
-  REACT_APP_API_PORT?: string;
-};
-
-const env = ((globalThis as unknown as { __STACKDOG_ENV__?: EnvLike }).__STACKDOG_ENV__ ??
-  {}) as EnvLike;
+const env = readEnv();
 const apiPort = resolveApiPort(env);
 const API_BASE_URL = env.REACT_APP_API_URL || `http://localhost:${apiPort}/api`;
 
