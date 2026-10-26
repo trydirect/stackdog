@@ -129,7 +129,7 @@ impl IptablesBackend {
     fn ip_drop_rule_exists(&self, chain: &str, ip: &str) -> Result<bool> {
         for spec in Self::drop_rule_specs(ip) {
             if self.rule_exists(chain, &spec)? {
-                return Ok(());
+                return Ok(true);
             }
         }
         Ok(false)
