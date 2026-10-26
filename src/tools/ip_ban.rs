@@ -1,14 +1,11 @@
-//! IP ban tools — check status and ban IPs
+//! IP ban tools — check status, ban, and release IPs
 
 use chrono::{Duration, Utc};
 use serde::Deserialize;
 
 use crate::database::connection::DbPool;
-use crate::database::repositories::offenses::{
-    active_block_for_ip, mark_blocked, recent_offenses_for_ip, record_offense_occurrence,
-    NewIpOffense,
-};
-use crate::ip_ban::config::IpBanConfig;
+use crate::database::repositories::offenses::{active_block_for_ip, recent_offenses_for_ip};
+use crate::ip_ban::{BanOutcome, IpBanConfig, IpBanEngine, LocalIpContext};
 
 use super::types::{tool_def, ToolDef, ToolResult};
 
@@ -30,7 +27,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         tool_def(
             "ban_ip",
-            "Ban an IP address for a specified duration. Use when an attack is confirmed and the IP should be blocked immediately.",
+            "Ban an IP address for a specified duration. Use when an attack is confirmed and the IP should be blocked immediately. Only plain public IPv4 addresses can be banned: private, local, and allowlisted addresses are refused because blocking them takes the service down.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -48,6 +45,20 @@ pub fn definitions() -> Vec<ToolDef> {
                     }
                 },
                 "required": ["ip_address", "reason"]
+            }),
+        ),
+        tool_def(
+            "unban_ip",
+            "Release a ban early and remove the firewall rules for an IP address. Use when an address was banned by mistake or the ban is no longer justified.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ip_address": {
+                        "type": "string",
+                        "description": "IPv4 address to release"
+                    }
+                },
+                "required": ["ip_address"]
             }),
         ),
     ]
@@ -103,65 +114,123 @@ pub fn execute_check_ip_status(pool: &DbPool, args: &str) -> ToolResult {
     ToolResult::success("check_ip_status", result)
 }
 
-pub fn execute_ban_ip(pool: &DbPool, config: &IpBanConfig, args: &str) -> ToolResult {
+pub async fn execute_ban_ip(pool: &DbPool, config: &IpBanConfig, args: &str) -> ToolResult {
     let args: BanIpArgs = match serde_json::from_str(args) {
         Ok(a) => a,
         Err(e) => return ToolResult::error("ban_ip", &format!("Invalid args: {}", e)),
     };
 
-    let duration = args.duration_secs.unwrap_or(config.ban_time_secs);
-    let now = Utc::now();
-    let blocked_until = now + Duration::seconds(duration as i64);
+    let engine = IpBanEngine::new(pool.clone(), config.clone())
+        .with_local_context(LocalIpContext::discover_local());
 
-    // Record the offense
-    if let Err(e) = record_offense_occurrence(
-        pool,
-        &NewIpOffense {
-            id: uuid::Uuid::new_v4().to_string(),
-            ip_address: args.ip_address.clone(),
-            source_type: "ai-tool".into(),
-            container_id: None,
-            first_seen: now,
-            reason: args.reason.clone(),
-            metadata: None,
-        },
-        now - Duration::seconds(config.find_time_secs as i64),
-    ) {
-        return ToolResult::error("ban_ip", &format!("Failed to record offense: {}", e));
+    // Through the engine: the same gate that stops the sniff path from banning
+    // infrastructure stops a tool call. A raw mark_blocked here used to accept
+    // any string, CIDR ranges included.
+    let outcome = match engine
+        .ban_now(
+            &args.ip_address,
+            &args.reason,
+            "ai-tool",
+            args.duration_secs,
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => return ToolResult::error("ban_ip", &format!("Failed to ban IP: {}", e)),
+    };
+
+    match outcome {
+        BanOutcome::Refused(refusal) => ToolResult::error(
+            "ban_ip",
+            &format!("Refused to ban {}: {}", args.ip_address, refusal.reason()),
+        ),
+        BanOutcome::AlreadyBanned => ToolResult::success(
+            "ban_ip",
+            serde_json::json!({
+                "success": true,
+                "ip_address": args.ip_address,
+                "already_banned": true,
+            }),
+        ),
+        BanOutcome::Banned { blocked_until } => {
+            log::info!(
+                "IP {} banned via AI tool until {}",
+                args.ip_address,
+                blocked_until
+            );
+
+            let duration = args.duration_secs.unwrap_or(config.ban_time_secs);
+            let cli_cmd = format!(
+                "stackdog ban-ip {} --duration {}s --reason \"{}\"",
+                args.ip_address, duration, args.reason
+            );
+
+            ToolResult::success(
+                "ban_ip",
+                serde_json::json!({
+                    "success": true,
+                    "ip_address": args.ip_address,
+                    "blocked_until": blocked_until.to_rfc3339(),
+                    "duration_secs": duration,
+                    "cli_command": cli_cmd,
+                }),
+            )
+        }
     }
+}
 
-    // Mark as blocked
-    if let Err(e) = mark_blocked(pool, &args.ip_address, "ai-tool", blocked_until) {
-        return ToolResult::error("ban_ip", &format!("Failed to mark blocked: {}", e));
+#[derive(Deserialize)]
+struct UnbanIpArgs {
+    ip_address: String,
+}
+
+pub async fn execute_unban_ip(pool: &DbPool, config: &IpBanConfig, args: &str) -> ToolResult {
+    let args: UnbanIpArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return ToolResult::error("unban_ip", &format!("Invalid args: {}", e)),
+    };
+
+    let engine = IpBanEngine::new(pool.clone(), config.clone())
+        .with_local_context(LocalIpContext::discover_local());
+
+    match engine.unban_ip(&args.ip_address).await {
+        Ok(true) => ToolResult::success(
+            "unban_ip",
+            serde_json::json!({
+                "success": true,
+                "ip_address": args.ip_address,
+                "released": true,
+            }),
+        ),
+        Ok(false) => ToolResult::success(
+            "unban_ip",
+            serde_json::json!({
+                "success": true,
+                "ip_address": args.ip_address,
+                "released": false,
+                "note": "no active ban for this address",
+            }),
+        ),
+        Err(e) => ToolResult::error("unban_ip", &format!("Failed to release ban: {}", e)),
     }
-
-    log::info!(
-        "IP {} banned via AI tool until {}",
-        args.ip_address,
-        blocked_until
-    );
-
-    let cli_cmd = format!(
-        "stackdog ban-ip {} --duration {}s --reason \"{}\"",
-        args.ip_address, duration, args.reason
-    );
-
-    ToolResult::success(
-        "ban_ip",
-        serde_json::json!({
-            "success": true,
-            "ip_address": args.ip_address,
-            "blocked_until": blocked_until.to_rfc3339(),
-            "duration_secs": duration,
-            "cli_command": cli_cmd,
-        }),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::connection::{create_pool, init_database};
+    use crate::database::repositories::offenses::{record_offense_occurrence, NewIpOffense};
+
+    #[cfg(target_os = "linux")]
+    fn running_as_root() -> bool {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim() == "0")
+            .unwrap_or(false)
+    }
 
     #[test]
     fn test_check_ip_status_returns_not_banned_for_unknown_ip() {
@@ -226,8 +295,8 @@ mod tests {
         assert!(result.content.contains("error"));
     }
 
-    #[test]
-    fn test_ban_ip_records_offense_and_blocks() {
+    #[actix_rt::test]
+    async fn test_ban_ip_records_offense_and_blocks() {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
         let config = IpBanConfig::from_env();
@@ -236,7 +305,19 @@ mod tests {
             &pool,
             &config,
             r#"{"ip_address": "5.6.7.8", "reason": "test ban", "duration_secs": 60}"#,
-        );
+        )
+        .await;
+
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            assert!(
+                result.content.contains("error"),
+                "ban without CAP_NET_ADMIN must report the firewall failure: {}",
+                result.content
+            );
+            return;
+        }
+
         assert!(result.content.contains("true"));
         assert!(result.content.contains("5.6.7.8"));
         assert!(result.content.contains("cli_command"));
@@ -246,8 +327,8 @@ mod tests {
         assert!(check.content.contains("true")); // banned: true
     }
 
-    #[test]
-    fn test_ban_ip_uses_default_duration() {
+    #[actix_rt::test]
+    async fn test_ban_ip_uses_default_duration() {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
         let config = IpBanConfig::from_env();
@@ -256,7 +337,76 @@ mod tests {
             &pool,
             &config,
             r#"{"ip_address": "9.10.11.12", "reason": "test"}"#,
-        );
+        )
+        .await;
+
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            assert!(
+                result.content.contains("error"),
+                "ban without CAP_NET_ADMIN must report the firewall failure: {}",
+                result.content
+            );
+            return;
+        }
+
         assert!(result.content.contains("success"));
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_ip_refuses_cidr_and_infrastructure_addresses() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let config = IpBanConfig::from_env();
+
+        // A range would drop a whole docker network; a container address would
+        // drop a service peer. Neither may be banned from here. The refusal
+        // happens before any firewall write, so this holds for every user.
+        for ip in ["172.16.0.0/12", "10.0.0.5", "127.0.0.1", "not-an-ip"] {
+            let result = execute_ban_ip(
+                &pool,
+                &config,
+                &format!(r#"{{"ip_address": "{ip}", "reason": "test"}}"#),
+            )
+            .await;
+            assert!(
+                result.content.contains("Refused") || result.content.contains("error"),
+                "{ip} must not be bannable, got: {}",
+                result.content
+            );
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_unban_ip_releases_a_ban() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let config = IpBanConfig::from_env();
+
+        let banned = execute_ban_ip(
+            &pool,
+            &config,
+            r#"{"ip_address": "5.6.7.8", "reason": "test", "duration_secs": 60}"#,
+        )
+        .await;
+
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            assert!(
+                banned.content.contains("error"),
+                "ban without CAP_NET_ADMIN must report the firewall failure: {}",
+                banned.content
+            );
+            return;
+        }
+
+        assert!(banned.content.contains("success"));
+
+        let released = execute_unban_ip(&pool, &config, r#"{"ip_address": "5.6.7.8"}"#).await;
+        assert!(released.content.contains("released"));
+
+        let check = execute_check_ip_status(&pool, r#"{"ip_address": "5.6.7.8"}"#);
+        let payload: serde_json::Value = serde_json::from_str(&check.content).unwrap();
+        assert_eq!(payload["banned"], false);
     }
 }

@@ -7,6 +7,37 @@ use std::process::{Command, Output};
 
 use crate::firewall::backend::FirewallBackend;
 
+/// Marker carried by every rule Stackdog installs.
+///
+/// Without it a DROP rule is indistinguishable from one an operator wrote, so
+/// nothing can safely clean up after a crash or answer "what is blocking my
+/// traffic". Rules predating the marker are still removed by address, but only
+/// tagged rules are claimed in `list_banned_ips`.
+const RULE_COMMENT: &str = "stackdog";
+
+/// The address of a tagged ban rule, if `line` is one.
+///
+/// `iptables -S` prints rules in parse form:
+/// `-A INPUT -s 1.2.3.4/32 -m comment --comment stackdog -j DROP`.
+pub(crate) fn tagged_ban_ip(line: &str) -> Option<String> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let is_ours = words
+        .windows(2)
+        .any(|pair| pair[0] == "--comment" && pair[1] == RULE_COMMENT);
+    let is_drop = words
+        .windows(2)
+        .any(|pair| pair[0] == "-j" && pair[1] == "DROP");
+    if !is_ours || !is_drop {
+        return None;
+    }
+
+    let position = words.iter().position(|word| *word == "-s")?;
+    let raw = words.get(position + 1)?;
+    let ip = raw.trim_end_matches("/32");
+    ip.parse::<std::net::Ipv4Addr>().ok()?;
+    Some(ip.to_string())
+}
+
 /// iptables chain
 #[derive(Debug, Clone)]
 pub struct IptChain {
@@ -66,12 +97,42 @@ impl IptablesBackend {
         ["INPUT", "FORWARD"]
     }
 
-    fn ip_drop_rule_exists(&self, chain: &str, ip: &str) -> Result<bool> {
-        let output = self.run_iptables_output(
-            &["-C", chain, "-s", ip, "-j", "DROP"],
-            "Failed to inspect iptables rule",
-        )?;
+    /// Rule shapes to look for, newest first.
+    ///
+    /// The tagged shape is what `ensure_ip_drop_rule` installs; the bare shape
+    /// is what releases before rule tagging left behind. Both are ours to
+    /// remove, and only the tagged shape is ours to claim in `list_banned_ips`.
+    fn drop_rule_specs(ip: &str) -> [Vec<String>; 2] {
+        [
+            vec![
+                "-s".into(),
+                ip.into(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                RULE_COMMENT.into(),
+                "-j".into(),
+                "DROP".into(),
+            ],
+            vec!["-s".into(), ip.into(), "-j".into(), "DROP".into()],
+        ]
+    }
+
+    fn rule_exists(&self, chain: &str, spec: &[String]) -> Result<bool> {
+        let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+        let mut args = vec!["-C", chain];
+        args.extend_from_slice(&refs);
+        let output = self.run_iptables_output(&args, "Failed to inspect iptables rule")?;
         Ok(output.status.success())
+    }
+
+    fn ip_drop_rule_exists(&self, chain: &str, ip: &str) -> Result<bool> {
+        for spec in Self::drop_rule_specs(ip) {
+            if self.rule_exists(chain, &spec)? {
+                return Ok(());
+            }
+        }
+        Ok(false)
     }
 
     fn ensure_ip_drop_rule(&self, chain: &str, ip: &str) -> Result<()> {
@@ -79,21 +140,28 @@ impl IptablesBackend {
             return Ok(());
         }
 
-        self.run_iptables(
-            &["-I", chain, "-s", ip, "-j", "DROP"],
-            "Failed to block IP with iptables",
-        )
+        let spec = Self::drop_rule_specs(ip)[0].clone();
+        let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+        let mut args = vec!["-I", chain];
+        args.extend_from_slice(&refs);
+        self.run_iptables(&args, "Failed to block IP with iptables")
     }
 
     fn remove_ip_drop_rule(&self, chain: &str, ip: &str) -> Result<()> {
-        if !self.ip_drop_rule_exists(chain, ip)? {
-            return Ok(());
+        // Every instance of both shapes: duplicates from an older release or
+        // an interrupted pass must go as well.
+        for spec in Self::drop_rule_specs(ip) {
+            for _ in 0..8 {
+                if !self.rule_exists(chain, &spec)? {
+                    break;
+                }
+                let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+                let mut args = vec!["-D", chain];
+                args.extend_from_slice(&refs);
+                self.run_iptables(&args, "Failed to unblock IP with iptables")?;
+            }
         }
-
-        self.run_iptables(
-            &["-D", chain, "-s", ip, "-j", "DROP"],
-            "Failed to unblock IP with iptables",
-        )
+        Ok(())
     }
 
     /// Create a new iptables backend
@@ -259,6 +327,26 @@ impl FirewallBackend for IptablesBackend {
         Ok(())
     }
 
+    fn list_banned_ips(&self) -> Result<Vec<String>> {
+        let mut ips = std::collections::BTreeSet::new();
+
+        for chain in Self::input_and_forward_chains() {
+            let output =
+                self.run_iptables_output(&["-S", chain], "Failed to list iptables rules")?;
+            if !output.status.success() {
+                anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+            }
+
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(ip) = tagged_ban_ip(line) {
+                    ips.insert(ip);
+                }
+            }
+        }
+
+        Ok(ips.into_iter().collect())
+    }
+
     fn block_port(&self, port: u16) -> Result<()> {
         let port = port.to_string();
         self.run_iptables(
@@ -324,6 +412,34 @@ mod tests {
         assert_eq!(
             IptablesBackend::input_and_forward_chains(),
             ["INPUT", "FORWARD"]
+        );
+    }
+
+    #[test]
+    fn test_tagged_ban_ip_reads_the_rule_shape() {
+        assert_eq!(
+            tagged_ban_ip("-A INPUT -s 1.2.3.4/32 -m comment --comment stackdog -j DROP"),
+            Some("1.2.3.4".to_string())
+        );
+        assert_eq!(
+            tagged_ban_ip("-A FORWARD -s 1.2.3.4/32 -m comment --comment stackdog -j DROP"),
+            Some("1.2.3.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tagged_ban_ip_ignores_foreign_and_untagged_rules() {
+        // Untagged legacy ban shape: ours to remove, not ours to claim.
+        assert_eq!(tagged_ban_ip("-A INPUT -s 1.2.3.4/32 -j DROP"), None);
+        // Somebody else's rule with a different comment.
+        assert_eq!(
+            tagged_ban_ip("-A INPUT -s 1.2.3.4/32 -m comment --comment admin -j DROP"),
+            None
+        );
+        // Right comment, not a drop.
+        assert_eq!(
+            tagged_ban_ip("-A INPUT -s 1.2.3.4/32 -m comment --comment stackdog -j ACCEPT"),
+            None
         );
     }
 }

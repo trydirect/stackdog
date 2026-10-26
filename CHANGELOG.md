@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Infrastructure addresses can no longer be banned.** Every ban path (log
+  sniffing, `stackdog ban-ip`, the AI `ban_ip` tool) now passes a gate that
+  refuses CIDR ranges (iptables accepts `-s 172.16.0.0/12` and drops a whole
+  Docker network), private and loopback addresses, `STACKDOG_IP_BAN_ALLOWLIST`
+  entries, and addresses of the host or its containers. The CLI and AI paths
+  used to skip all of these checks.
+- **Ban rules are tagged and reconciled.** Rules now carry a `stackdog` marker;
+  on start, rules with no database record are removed and recorded bans with no
+  rule are re-applied — a crash between the firewall write and the database
+  write used to strand a DROP rule nothing would ever remove.
+- **Expired bans are released in `stackdog sniff` too.** The expiry loop ran
+  only under `serve`; a sniff-only deployment banned permanently.
+- **`web.login-bruteforce` no longer fires on bare `401` lines.** Inter-service
+  auth noise in microservice stacks read as a brute-force attempt.
+- **Mail abuse guard requires SMTP evidence before quarantining.** The traffic
+  heuristic matches ordinary HTTP/JSON chatter; quarantine (disconnecting the
+  container from its networks) now also needs observed egress to ports
+  25/465/587. A match without it is an alert. `STACKDOG_MAIL_GUARD_REQUIRE_SMTP`
+  restores the old behaviour.
+- **nftables generic mutators actually apply.** `create_chain`, `delete_chain`,
+  `add_rule`, and `flush_chain` ran `nft -c` (check-only) and changed nothing.
+
+### Added
+
+- `stackdog unban <ip>` — release a ban and remove its firewall rules, even
+  when the database has no record of it (crash leftovers).
+- `stackdog unban --all` — release every ban and remove every Stackdog firewall
+  rule: the one command to restore connectivity after a wrong ban.
+- `stackdog firewall list` — show blocked addresses in the firewall and the
+  database side by side.
+- `stackdog firewall reconcile` — run the startup reconciliation on demand.
+- AI tool `unban_ip`, symmetric to `ban_ip`.
+- `STACKDOG_IP_BAN_PROTECT_LOCAL_IPS` (default `true`) — never ban addresses of
+  this host or its containers.
+
 ## [0.2.2] - 2026-04-07
 
 ### Fixed

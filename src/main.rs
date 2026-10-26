@@ -24,7 +24,7 @@ use actix_web::{web, App, HttpServer};
 use clap::Parser;
 use cli::{Cli, Command};
 use stackdog::database::{create_pool, init_database};
-use stackdog::ip_ban::IpBanConfig;
+use stackdog::ip_ban::{BanOutcome, IpBanConfig, IpBanEngine, LocalIpContext};
 use stackdog::sniff;
 use std::{env, io};
 use tracing::{info, Level};
@@ -96,6 +96,13 @@ async fn main() -> io::Result<()> {
             let duration_secs = parse_duration(&ban.duration);
             run_ban_ip(&ban.ip_address, duration_secs, &ban.reason).await
         }
+        Some(Command::Unban(unban)) => {
+            run_unban(unban.ip_address.as_deref(), unban.all, &unban.reason).await
+        }
+        Some(Command::Firewall(firewall)) => match firewall.command {
+            cli::FirewallSubcommand::List => run_firewall_list().await,
+            cli::FirewallSubcommand::Reconcile => run_firewall_reconcile().await,
+        },
         // Default: serve (backward compatible)
         Some(Command::Serve) | None => run_serve().await,
     }
@@ -135,9 +142,27 @@ async fn run_serve() -> io::Result<()> {
 
     let ip_ban_config = stackdog::ip_ban::IpBanConfig::from_env();
     if ip_ban_config.enabled {
-        let ip_ban_pool = pool.clone();
+        let mut engine = stackdog::ip_ban::IpBanEngine::new(pool.clone(), ip_ban_config.clone());
+        engine.refresh_local_context().await;
+
+        // Crash leftovers must not keep blocking traffic: bring the firewall
+        // and the database back in agreement before anything else runs.
+        match engine.reconcile_firewall().await {
+            Ok(report) => {
+                if !report.orphan_rules_removed.is_empty()
+                    || !report.missing_rules_restored.is_empty()
+                {
+                    info!(
+                        "Firewall reconciled: {} orphan rule(s) removed, {} ban rule(s) restored",
+                        report.orphan_rules_removed.len(),
+                        report.missing_rules_restored.len()
+                    );
+                }
+            }
+            Err(err) => log::warn!("Firewall reconciliation failed: {}", err),
+        }
+
         actix_rt::spawn(async move {
-            let engine = stackdog::ip_ban::IpBanEngine::new(ip_ban_pool, ip_ban_config);
             loop {
                 if let Err(err) = engine.unban_expired().await {
                     log::warn!("IP ban unban pass failed: {}", err);
@@ -244,7 +269,7 @@ async fn run_sniff(config: sniff::config::SniffConfig) -> io::Result<()> {
         info!("Email: configured ✓");
     }
 
-    let orchestrator = sniff::SniffOrchestrator::new(config).map_err(io::Error::other)?;
+    let mut orchestrator = sniff::SniffOrchestrator::new(config).map_err(io::Error::other)?;
 
     orchestrator.run().await.map_err(io::Error::other)
 }
@@ -279,31 +304,135 @@ async fn run_ban_ip(ip: &str, duration_secs: u64, reason: &str) -> io::Result<()
     init_database(&pool).map_err(io::Error::other)?;
 
     let config = IpBanConfig::from_env();
-    let result = stackdog::tools::ip_ban::execute_ban_ip(
-        &pool,
-        &config,
-        &serde_json::json!({
-            "ip_address": ip,
-            "reason": reason,
-            "duration_secs": duration_secs,
-        })
-        .to_string(),
-    );
+    let engine =
+        IpBanEngine::new(pool, config).with_local_context(LocalIpContext::discover_local());
 
-    if result.content.contains("error") {
-        eprintln!("Error: {}", result.content);
-        std::process::exit(1);
+    match engine
+        .ban_now(ip, reason, "cli", Some(duration_secs))
+        .await
+        .map_err(io::Error::other)?
+    {
+        BanOutcome::Refused(refusal) => {
+            eprintln!("Refused to ban {}: {}", ip, refusal.reason());
+            std::process::exit(1);
+        }
+        BanOutcome::AlreadyBanned => {
+            println!("{} is already banned", ip);
+        }
+        BanOutcome::Banned { blocked_until } => {
+            println!("IP banned successfully");
+            println!("  IP:            {}", ip);
+            println!("  Blocked until: {}", blocked_until);
+            println!("  Duration:      {}s", duration_secs);
+        }
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(&result.content)
-        .map_err(|e| io::Error::other(format!("Failed to parse result: {}", e)))?;
+    Ok(())
+}
 
-    println!("IP banned successfully");
-    println!("  IP:            {}", parsed["ip_address"]);
-    println!("  Blocked until: {}", parsed["blocked_until"]);
-    println!("  Duration:      {}s", parsed["duration_secs"]);
-    if let Some(cmd) = parsed["cli_command"].as_str() {
-        println!("  CLI:           {}", cmd);
+async fn run_unban(ip: Option<&str>, all: bool, reason: &str) -> io::Result<()> {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into());
+    let pool = create_pool(&database_url).map_err(io::Error::other)?;
+    init_database(&pool).map_err(io::Error::other)?;
+
+    let config = IpBanConfig::from_env();
+    let engine =
+        IpBanEngine::new(pool, config).with_local_context(LocalIpContext::discover_local());
+
+    if all {
+        let released = engine.unban_all().await.map_err(io::Error::other)?;
+        println!(
+            "Released {} ban(s); Stackdog firewall rules removed",
+            released
+        );
+        println!("  Reason:        {}", reason);
+        return Ok(());
+    }
+
+    let ip = ip.ok_or_else(|| io::Error::other("provide an IP address or --all"))?;
+    let records = engine
+        .unban_ip_best_effort(ip)
+        .await
+        .map_err(io::Error::other)?;
+
+    if records > 0 {
+        println!("Ban released for {} ({} record(s))", ip, records);
+    } else {
+        println!(
+            "No active ban recorded for {}; firewall rules removed anyway",
+            ip
+        );
+    }
+    println!("  Reason:        {}", reason);
+
+    Ok(())
+}
+
+async fn run_firewall_list() -> io::Result<()> {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into());
+    let pool = create_pool(&database_url).map_err(io::Error::other)?;
+    init_database(&pool).map_err(io::Error::other)?;
+
+    let config = IpBanConfig::from_env();
+    let engine =
+        IpBanEngine::new(pool, config).with_local_context(LocalIpContext::discover_local());
+
+    let rules = engine.firewall_banned_ips().map_err(io::Error::other)?;
+    let bans = engine.active_bans().map_err(io::Error::other)?;
+
+    println!("Firewall rules (tagged stackdog):");
+    if rules.is_empty() {
+        println!("  (none)");
+    } else {
+        for ip in &rules {
+            println!("  -s {} -j DROP", ip);
+        }
+    }
+
+    println!("Database blocks:");
+    if bans.is_empty() {
+        println!("  (none)");
+    } else {
+        for ban in &bans {
+            println!(
+                "  {} until {} ({})",
+                ban.ip_address,
+                ban.blocked_until.as_deref().unwrap_or("?"),
+                ban.source_type
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_firewall_reconcile() -> io::Result<()> {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "./stackdog.db".into());
+    let pool = create_pool(&database_url).map_err(io::Error::other)?;
+    init_database(&pool).map_err(io::Error::other)?;
+
+    let config = IpBanConfig::from_env();
+    let engine =
+        IpBanEngine::new(pool, config).with_local_context(LocalIpContext::discover_local());
+
+    let report = engine
+        .reconcile_firewall()
+        .await
+        .map_err(io::Error::other)?;
+
+    println!(
+        "Orphan rules removed: {}",
+        report.orphan_rules_removed.len()
+    );
+    for ip in &report.orphan_rules_removed {
+        println!("  {}", ip);
+    }
+    println!(
+        "Ban rules restored: {}",
+        report.missing_rules_restored.len()
+    );
+    for ip in &report.missing_rules_restored {
+        println!("  {}", ip);
     }
 
     Ok(())

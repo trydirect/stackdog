@@ -68,7 +68,8 @@ impl ToolRegistry {
         let args = &call.function.arguments;
         match call.function.name.as_str() {
             "check_ip_status" => ip_ban::execute_check_ip_status(&self.pool, args),
-            "ban_ip" => ip_ban::execute_ban_ip(&self.pool, &self.ip_ban_config, args),
+            "ban_ip" => ip_ban::execute_ban_ip(&self.pool, &self.ip_ban_config, args).await,
+            "unban_ip" => ip_ban::execute_unban_ip(&self.pool, &self.ip_ban_config, args).await,
             "list_containers" => {
                 let postures = self.postures.read().unwrap();
                 docker::execute_list_containers(&postures)
@@ -102,6 +103,7 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
         assert!(names.contains(&"check_ip_status"));
         assert!(names.contains(&"ban_ip"));
+        assert!(names.contains(&"unban_ip"));
         assert!(names.contains(&"list_containers"));
         assert!(names.contains(&"get_container_posture"));
         assert!(names.contains(&"recent_alerts"));

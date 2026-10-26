@@ -7,6 +7,26 @@ use std::process::Command;
 
 use crate::firewall::backend::FirewallBackend;
 
+/// Marker carried by every rule Stackdog installs — see the iptables backend
+/// for why rules must be identifiable as ours.
+const RULE_COMMENT: &str = "stackdog";
+
+/// The address of a tagged ban rule, if `line` is one.
+///
+/// `nft -a list chain` prints:
+/// `ip saddr 1.2.3.4 drop comment "stackdog" # handle 7`.
+pub(crate) fn tagged_ban_ip(line: &str) -> Option<String> {
+    if !line.contains(RULE_COMMENT) {
+        return None;
+    }
+
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let position = words.iter().position(|word| *word == "saddr")?;
+    let ip = words.get(position + 1)?;
+    ip.parse::<std::net::Ipv4Addr>().ok()?;
+    Some(ip.to_string())
+}
+
 /// nftables table
 #[derive(Debug, Clone)]
 pub struct NfTable {
@@ -184,18 +204,27 @@ impl NfTablesBackend {
     }
 
     fn find_rule_handle(rules: &[String], rule_spec: &str) -> Option<String> {
-        rules.iter().find_map(|line| {
-            let normalized = line.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !normalized.contains(rule_spec) {
-                return None;
-            }
+        Self::find_rule_handles(rules, rule_spec).into_iter().next()
+    }
 
-            line.rsplit_once("# handle ")
-                .map(|(_, handle)| handle.trim().to_string())
-        })
+    fn find_rule_handles(rules: &[String], rule_spec: &str) -> Vec<String> {
+        rules
+            .iter()
+            .filter_map(|line| {
+                let normalized = line.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !normalized.contains(rule_spec) {
+                    return None;
+                }
+
+                line.rsplit_once("# handle ")
+                    .map(|(_, handle)| handle.trim().to_string())
+            })
+            .collect()
     }
 
     fn ensure_ip_drop_rule(&self, chain: &NfChain, ip: &str) -> Result<()> {
+        // Matches the tagged and the legacy untagged shape alike: an address
+        // already dropped is dropped, whatever release added the rule.
         let rule_spec = format!("ip saddr {} drop", ip);
         if Self::find_rule_handle(&self.list_rules(chain)?, &rule_spec).is_some() {
             return Ok(());
@@ -212,6 +241,8 @@ impl NfTablesBackend {
                 "saddr",
                 ip,
                 "drop",
+                "comment",
+                "\"stackdog\"",
             ],
             "Failed to add nftables rule",
         )
@@ -219,12 +250,11 @@ impl NfTablesBackend {
 
     fn delete_ip_drop_rule_if_present(&self, chain: &NfChain, ip: &str) -> Result<()> {
         let rule_spec = format!("ip saddr {} drop", ip);
-        if Self::find_rule_handle(&self.list_rules(chain)?, &rule_spec).is_none() {
-            return Ok(());
+        // Every instance of both shapes, not just the first match.
+        for handle in Self::find_rule_handles(&self.list_rules(chain)?, &rule_spec) {
+            self.delete_rule_by_handle(chain, &handle)?;
         }
-
-        let rule = NfRule::new(chain, rule_spec.to_string());
-        self.delete_rule(&rule)
+        Ok(())
     }
 
     /// Create a new nftables backend
@@ -289,65 +319,50 @@ impl NfTablesBackend {
 
     /// Create a chain
     pub fn create_chain(&self, chain: &NfChain) -> Result<()> {
-        let cmd = format!(
-            "add chain {} {} {{ type {} hook input priority 0; }}",
-            chain.table, chain.name, chain.chain_type
-        );
+        let spec = format!("{{ type {} hook input priority 0; }}", chain.chain_type);
 
-        let output = Command::new("nft")
-            .args(["-c", &cmd])
-            .output()
-            .context("Failed to create nftables chain")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create chain: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
+        // Plain `nft`, not `nft -c`: the check flag only validates the command
+        // and applies nothing, which left callers believing a chain existed.
+        self.run_nft(
+            &[
+                "add",
+                "chain",
+                &chain.table.family,
+                &chain.table.name,
+                &chain.name,
+                &spec,
+            ],
+            "Failed to create nftables chain",
+        )
     }
 
     /// Delete a chain
     pub fn delete_chain(&self, chain: &NfChain) -> Result<()> {
-        let cmd = format!("delete chain {} {}", chain.table, chain.name);
-
-        let output = Command::new("nft")
-            .args(["-c", &cmd])
-            .output()
-            .context("Failed to delete nftables chain")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to delete chain: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
+        self.run_nft(
+            &[
+                "delete",
+                "chain",
+                &chain.table.family,
+                &chain.table.name,
+                &chain.name,
+            ],
+            "Failed to delete nftables chain",
+        )
     }
 
     /// Add a rule
     pub fn add_rule(&self, rule: &NfRule) -> Result<()> {
-        let cmd = format!(
-            "add rule {} {} {}",
-            rule.chain.table, rule.chain.name, rule.rule_spec
-        );
-
-        let output = Command::new("nft")
-            .args(["-c", &cmd])
-            .output()
-            .context("Failed to add nftables rule")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to add rule: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
+        self.run_nft(
+            &[
+                "add",
+                "rule",
+                &rule.chain.table.family,
+                &rule.chain.table.name,
+                &rule.chain.name,
+                &rule.rule_spec,
+            ],
+            "Failed to add nftables rule",
+        )
     }
 
     /// Delete a rule
@@ -372,21 +387,16 @@ impl NfTablesBackend {
 
     /// Flush a chain
     pub fn flush_chain(&self, chain: &NfChain) -> Result<()> {
-        let cmd = format!("flush chain {} {}", chain.table, chain.name);
-
-        let output = Command::new("nft")
-            .args(["-c", &cmd])
-            .output()
-            .context("Failed to flush nftables chain")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to flush chain: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
+        self.run_nft(
+            &[
+                "flush",
+                "chain",
+                &chain.table.family,
+                &chain.table.name,
+                &chain.name,
+            ],
+            "Failed to flush nftables chain",
+        )
     }
 
     /// List rules in a chain
@@ -440,6 +450,20 @@ impl FirewallBackend for NfTablesBackend {
             self.delete_ip_drop_rule_if_present(&chain, ip)?;
         }
         Ok(())
+    }
+
+    fn list_banned_ips(&self) -> Result<Vec<String>> {
+        let mut ips = std::collections::BTreeSet::new();
+
+        for chain in self.input_and_forward_chains() {
+            for line in self.list_rules(&chain)? {
+                if let Some(ip) = tagged_ban_ip(&line) {
+                    ips.insert(ip);
+                }
+            }
+        }
+
+        Ok(ips.into_iter().collect())
     }
 
     fn block_port(&self, port: u16) -> Result<()> {
@@ -545,5 +569,44 @@ mod tests {
         let chains = backend.input_and_forward_chains();
         assert_eq!(chains[0].name, "input");
         assert_eq!(chains[1].name, "forward");
+    }
+
+    #[test]
+    fn test_find_rule_handles_returns_every_instance() {
+        let rules = vec![
+            "ip saddr 1.2.3.4 drop # handle 7".to_string(),
+            "ip saddr 5.6.7.8 drop # handle 8".to_string(),
+            "ip saddr 1.2.3.4 drop comment \"stackdog\" # handle 9".to_string(),
+        ];
+
+        let handles = NfTablesBackend::find_rule_handles(&rules, "ip saddr 1.2.3.4 drop");
+
+        assert_eq!(handles, vec!["7".to_string(), "9".to_string()]);
+    }
+
+    #[test]
+    fn test_tagged_ban_ip_reads_the_rule_shape() {
+        assert_eq!(
+            tagged_ban_ip("ip saddr 1.2.3.4 drop comment \"stackdog\" # handle 7"),
+            Some("1.2.3.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tagged_ban_ip_ignores_foreign_and_untagged_rules() {
+        assert_eq!(
+            tagged_ban_ip("ip saddr 1.2.3.4 drop # handle 7"),
+            None,
+            "legacy untagged rule: ours to remove, not ours to claim"
+        );
+        assert_eq!(
+            tagged_ban_ip("ip saddr 1.2.3.4 drop comment \"admin\" # handle 7"),
+            None
+        );
+        assert_eq!(
+            tagged_ban_ip("tcp dport 25 drop comment \"stackdog\" # handle 7"),
+            None
+        );
+        assert_eq!(tagged_ban_ip("type filter hook input priority 0;"), None);
     }
 }

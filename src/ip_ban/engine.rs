@@ -2,11 +2,12 @@ use crate::alerting::notifications::{dispatch_stored_alert, env_flag_enabled, No
 use crate::alerting::{AlertSeverity, AlertType};
 use crate::database::models::{Alert, AlertMetadata};
 use crate::database::repositories::offenses::{
-    active_block_for_ip, expired_blocks, mark_blocked, mark_released, record_offense_occurrence,
-    NewIpOffense, OffenseMetadata,
+    active_block_for_ip, expired_blocks, list_offenses, mark_blocked, mark_released,
+    record_offense_occurrence, IpOffenseRecord, NewIpOffense, OffenseMetadata, OffenseStatus,
 };
 use crate::database::{create_alert, DbPool};
 use crate::ip_ban::config::IpBanConfig;
+use crate::ip_ban::gate::{self, BanRefusal, LocalIpContext};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
@@ -26,11 +27,30 @@ pub struct OffenseInput {
     pub sample_line: Option<String>,
 }
 
+/// What happened to a manual ban request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BanOutcome {
+    Banned { blocked_until: DateTime<Utc> },
+    AlreadyBanned,
+    Refused(BanRefusal),
+}
+
+/// What a firewall/database reconciliation pass changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// Rules in the firewall with no active block in the database. Removed.
+    pub orphan_rules_removed: Vec<String>,
+    /// Active blocks in the database with no rule in the firewall. Re-applied.
+    pub missing_rules_restored: Vec<String>,
+}
+
 pub struct IpBanEngine {
     pool: DbPool,
     config: IpBanConfig,
     /// Timestamps of recent blocks, for the per-minute ceiling.
     recent_blocks: std::sync::Mutex<std::collections::VecDeque<DateTime<Utc>>>,
+    /// Addresses of this host and its containers, never bannable.
+    local_context: LocalIpContext,
 }
 
 impl IpBanEngine {
@@ -39,7 +59,22 @@ impl IpBanEngine {
             pool,
             config,
             recent_blocks: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            local_context: LocalIpContext::discover_local(),
         }
+    }
+
+    /// Replace the local-IP context. Tests use [`LocalIpContext::empty`] for
+    /// hermeticity; production callers usually keep discovery.
+    pub fn with_local_context(mut self, context: LocalIpContext) -> Self {
+        self.local_context = context;
+        self
+    }
+
+    /// Add Docker network subnets to the local-IP context, best-effort.
+    ///
+    /// Async and Docker-dependent, so it is a separate step from construction.
+    pub async fn refresh_local_context(&mut self) {
+        self.local_context.docker_subnets = LocalIpContext::discover_docker_subnets().await;
     }
 
     /// Whether another address may be blocked right now.
@@ -80,15 +115,16 @@ impl IpBanEngine {
         // Checked before the offense is even recorded: banning a load balancer
         // or health checker takes the service down, so protected addresses must
         // not accumulate offenses that a later config change could act on.
-        if let Ok(parsed) = offense.ip_address.parse::<std::net::Ipv4Addr>() {
-            if self.config.is_allowlisted(&parsed) {
-                log::info!(
-                    "Skipping offense for allowlisted IP {} ({})",
-                    offense.ip_address,
-                    offense.reason
-                );
-                return Ok(false);
-            }
+        if let Some(refusal) =
+            gate::refuse_reason(&offense.ip_address, &self.config, &self.local_context)
+        {
+            log::info!(
+                "Skipping offense for {} ({}): {}",
+                offense.ip_address,
+                offense.reason,
+                refusal.reason()
+            );
+            return Ok(false);
         }
 
         if active_block_for_ip(&self.pool, &offense.ip_address)?.is_some() {
@@ -129,7 +165,6 @@ impl IpBanEngine {
         let Some(offense) = active_block_for_ip(&self.pool, ip_address)? else {
             return Ok(false);
         };
-
         #[cfg(target_os = "linux")]
         self.with_firewall_backend(|backend| backend.unblock_ip(&offense.ip_address))?;
 
@@ -152,6 +187,57 @@ impl IpBanEngine {
             .await;
 
         Ok(true)
+    }
+
+    /// Release every block for `ip` and remove its firewall rules — row or no
+    /// row.
+    ///
+    /// The CLI path: unlike [`Self::unban_ip`] it does not require a database
+    /// record. A crash between the firewall write and the database write strands
+    /// a DROP rule nothing else will ever remove, and the rules in the kernel
+    /// are what is actually blocking traffic. Returns the number of records
+    /// released.
+    pub async fn unban_ip_best_effort(&self, ip_address: &str) -> Result<usize> {
+        let mut released = 0;
+
+        let blocked = list_offenses(&self.pool, Some(OffenseStatus::Blocked), usize::MAX)?;
+        for record in &blocked {
+            if record.ip_address != ip_address {
+                continue;
+            }
+            mark_released(&self.pool, &record.id)?;
+            released += 1;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Err(err) = self.with_firewall_backend(|backend| backend.unblock_ip(ip_address)) {
+            log::warn!(
+                "Failed to remove firewall rules for {}: {}",
+                ip_address,
+                err
+            );
+        }
+
+        Ok(released)
+    }
+
+    /// Blocks currently recorded in the database.
+    pub fn active_bans(&self) -> Result<Vec<IpOffenseRecord>> {
+        list_offenses(&self.pool, Some(OffenseStatus::Blocked), usize::MAX)
+    }
+
+    /// Addresses the Stackdog firewall rules are actually dropping.
+    ///
+    /// Empty off-Linux: there is no firewall backend there to ask.
+    pub fn firewall_banned_ips(&self) -> Result<Vec<String>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.with_firewall_backend(|backend| backend.list_banned_ips())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Vec::new())
+        }
     }
 
     /// Release every ban whose window has passed.
@@ -198,6 +284,86 @@ impl IpBanEngine {
         }
 
         Ok(released)
+    }
+
+    /// Release every ban and remove every Stackdog firewall rule.
+    ///
+    /// The panic button: when a wrong ban has taken the service down, restoring
+    /// connectivity matters more than preserving the block list. Rules the
+    /// database knows nothing about — a crash between the firewall write and
+    /// the database write, a lost database — go too. What is in the kernel is
+    /// what is actually blocking traffic.
+    pub async fn unban_all(&self) -> Result<usize> {
+        let blocked = list_offenses(&self.pool, Some(OffenseStatus::Blocked), usize::MAX)?;
+        let mut released: HashSet<String> = HashSet::new();
+
+        for record in &blocked {
+            mark_released(&self.pool, &record.id)?;
+            released.insert(record.ip_address.clone());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(rule_ips) = self.with_firewall_backend(|backend| backend.list_banned_ips()) {
+                released.extend(rule_ips);
+            }
+
+            for ip in &released {
+                if let Err(err) = self.with_firewall_backend(|backend| backend.unblock_ip(ip)) {
+                    log::warn!("Failed to remove firewall rule for {}: {}", ip, err);
+                }
+            }
+        }
+
+        Ok(released.len())
+    }
+
+    /// Make the firewall and the database agree again.
+    ///
+    /// Two failure modes leave them apart: a crash between the firewall rule
+    /// and the database write strands a DROP rule nothing will ever remove,
+    /// and a database row without a rule claims a ban that is not in effect.
+    /// Untagged rules cannot be told apart from an operator's own and are left
+    /// alone; `stackdog unban <ip>` removes those by address.
+    pub async fn reconcile_firewall(&self) -> Result<ReconcileReport> {
+        // Mutated only where a firewall backend exists (Linux).
+        #[allow(unused_mut)]
+        let mut report = ReconcileReport::default();
+
+        #[cfg(target_os = "linux")]
+        {
+            let rule_ips: HashSet<String> = self
+                .with_firewall_backend(|backend| backend.list_banned_ips())?
+                .into_iter()
+                .collect();
+            let active: HashSet<String> =
+                list_offenses(&self.pool, Some(OffenseStatus::Blocked), usize::MAX)?
+                    .into_iter()
+                    .map(|record| record.ip_address)
+                    .collect();
+
+            for ip in &rule_ips {
+                if active.contains(ip) {
+                    continue;
+                }
+                match self.with_firewall_backend(|backend| backend.unblock_ip(ip)) {
+                    Ok(()) => report.orphan_rules_removed.push(ip.clone()),
+                    Err(err) => log::warn!("Failed to remove orphan rule for {}: {}", ip, err),
+                }
+            }
+
+            for ip in &active {
+                if rule_ips.contains(ip) {
+                    continue;
+                }
+                match self.with_firewall_backend(|backend| backend.block_ip(ip)) {
+                    Ok(()) => report.missing_rules_restored.push(ip.clone()),
+                    Err(err) => log::warn!("Failed to restore rule for {}: {}", ip, err),
+                }
+            }
+        }
+
+        Ok(report)
     }
 
     /// Longest sample line kept in an alert message, so one enormous log line
@@ -268,10 +434,89 @@ impl IpBanEngine {
             return Ok(());
         }
 
+        self.apply_block(offense, offense_count, now, self.config.ban_time_secs)
+            .await
+    }
+
+    /// Ban an address immediately, whatever the offense threshold says.
+    ///
+    /// One confirmed attack is enough for a human or the AI assistant. Not
+    /// enough to skip the gate, though: the same infrastructure addresses are
+    /// off-limits here, and a CIDR range is refused just as hard.
+    pub async fn ban_now(
+        &self,
+        ip: &str,
+        reason: &str,
+        source_type: &str,
+        duration_secs: Option<u64>,
+    ) -> Result<BanOutcome> {
+        if let Some(refusal) = gate::refuse_reason(ip, &self.config, &self.local_context) {
+            return Ok(BanOutcome::Refused(refusal));
+        }
+
+        if active_block_for_ip(&self.pool, ip)?.is_some() {
+            return Ok(BanOutcome::AlreadyBanned);
+        }
+
+        let now = Utc::now();
+        let duration = duration_secs.unwrap_or(self.config.ban_time_secs);
+
+        // The row first: mark_blocked only flips existing rows, and a ban with
+        // no row would never expire and never be released.
+        record_offense_occurrence(
+            &self.pool,
+            &NewIpOffense {
+                id: Uuid::new_v4().to_string(),
+                ip_address: ip.to_string(),
+                source_type: source_type.to_string(),
+                container_id: None,
+                first_seen: now,
+                reason: reason.to_string(),
+                metadata: None,
+            },
+            now - Duration::seconds(self.config.find_time_secs as i64),
+        )?;
+
+        let offense = OffenseInput {
+            ip_address: ip.to_string(),
+            source_type: source_type.to_string(),
+            reason: reason.to_string(),
+            severity: AlertSeverity::High,
+            container_id: None,
+            source_path: None,
+            sample_line: None,
+        };
+        self.apply_block(&offense, 1, now, duration).await?;
+        Ok(BanOutcome::Banned {
+            blocked_until: now + Duration::seconds(duration as i64),
+        })
+    }
+
+    async fn apply_block(
+        &self,
+        offense: &OffenseInput,
+        offense_count: u32,
+        now: chrono::DateTime<Utc>,
+        duration_secs: u64,
+    ) -> Result<()> {
+        // Defence in depth: both callers gate already. Anything that reaches a
+        // firewall backend must have passed through refuse_reason first.
+        if let Some(refusal) =
+            gate::refuse_reason(&offense.ip_address, &self.config, &self.local_context)
+        {
+            log::warn!(
+                "Refusing to block {} ({}): {}",
+                offense.ip_address,
+                offense.reason,
+                refusal.reason()
+            );
+            return Ok(());
+        }
+
         #[cfg(target_os = "linux")]
         self.with_firewall_backend(|backend| backend.block_ip(&offense.ip_address))?;
 
-        let blocked_until = now + Duration::seconds(self.config.ban_time_secs as i64);
+        let blocked_until = now + Duration::seconds(duration_secs as i64);
         mark_blocked(
             &self.pool,
             &offense.ip_address,
@@ -334,9 +579,9 @@ impl IpBanEngine {
     }
 
     #[cfg(target_os = "linux")]
-    fn with_firewall_backend<F>(&self, action: F) -> Result<()>
+    fn with_firewall_backend<T, F>(&self, action: F) -> Result<T>
     where
-        F: FnOnce(&dyn crate::firewall::FirewallBackend) -> Result<()>,
+        F: FnOnce(&dyn crate::firewall::FirewallBackend) -> Result<T>,
     {
         if let Ok(mut backend) = crate::firewall::NfTablesBackend::new() {
             backend.initialize()?;
@@ -478,6 +723,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
 
@@ -619,6 +865,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 3,
+                protect_local_ips: true,
             },
         );
         let now = Utc::now();
@@ -650,6 +897,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let now = Utc::now();
@@ -674,6 +922,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: parse_cidr_list("167.233.9.19,10.0.0.0/8"),
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
 
@@ -718,6 +967,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
 
@@ -793,6 +1043,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
 
@@ -854,5 +1105,160 @@ mod tests {
                 .and_then(|metadata| metadata.reason.as_deref()),
             Some("Released expired ban for 192.0.2.55")
         );
+    }
+
+    fn test_config() -> IpBanConfig {
+        IpBanConfig {
+            enabled: true,
+            max_retries: 5,
+            find_time_secs: 300,
+            ban_time_secs: 60,
+            unban_check_interval_secs: 60,
+            trusted_proxy_ranges: vec![],
+            allowlist_ranges: vec![],
+            max_bans_per_minute: 0,
+            protect_local_ips: true,
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_now_refuses_unbannable_addresses() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(pool.clone(), test_config())
+            .with_local_context(LocalIpContext::empty());
+
+        for ip in ["172.16.0.0/12", "10.0.0.5", "127.0.0.1", "not-an-ip"] {
+            let outcome = engine.ban_now(ip, "test", "cli", None).await.unwrap();
+            assert!(
+                matches!(outcome, BanOutcome::Refused(_)),
+                "{ip} must be refused, got {:?}",
+                outcome
+            );
+        }
+
+        assert!(
+            engine.active_bans().unwrap().is_empty(),
+            "refused addresses must leave no trace"
+        );
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_now_refuses_local_infrastructure() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let context = LocalIpContext {
+            interface_ips: vec!["203.0.113.5".parse().unwrap()],
+            docker_subnets: parse_cidr_list("198.51.100.0/24"),
+        };
+        let engine = IpBanEngine::new(pool.clone(), test_config()).with_local_context(context);
+
+        for ip in ["203.0.113.5", "198.51.100.77"] {
+            let outcome = engine.ban_now(ip, "test", "cli", None).await.unwrap();
+            assert_eq!(
+                outcome,
+                BanOutcome::Refused(BanRefusal::LocalInfrastructure),
+                "{ip} belongs to this host or its containers"
+            );
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_record_offense_skips_unbannable_addresses() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(
+            pool.clone(),
+            IpBanConfig {
+                max_retries: 1,
+                ..test_config()
+            },
+        )
+        .with_local_context(LocalIpContext::empty());
+
+        for ip in ["172.16.0.0/12", "10.0.0.5", "192.168.4.7"] {
+            let recorded = engine
+                .record_offense(OffenseInput {
+                    ip_address: ip.into(),
+                    source_type: "sniff".into(),
+                    reason: "test".into(),
+                    severity: AlertSeverity::High,
+                    container_id: None,
+                    source_path: None,
+                    sample_line: None,
+                })
+                .await
+                .unwrap();
+            assert!(!recorded, "{ip} must not reach the ban threshold");
+        }
+
+        assert!(engine.active_bans().unwrap().is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_unban_ip_best_effort_releases_rows_without_a_firewall() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(pool.clone(), test_config())
+            .with_local_context(LocalIpContext::empty());
+
+        // Two source types block the same address — both rows must go.
+        for source in ["sniff", "cli"] {
+            record_offense_occurrence(
+                &pool,
+                &NewIpOffense {
+                    id: Uuid::new_v4().to_string(),
+                    ip_address: "192.0.2.66".into(),
+                    source_type: source.into(),
+                    container_id: None,
+                    first_seen: Utc::now(),
+                    reason: "test".into(),
+                    metadata: None,
+                },
+                Utc::now() - Duration::minutes(5),
+            )
+            .unwrap();
+            mark_blocked(
+                &pool,
+                "192.0.2.66",
+                source,
+                Utc::now() + Duration::minutes(30),
+            )
+            .unwrap();
+        }
+
+        let released = engine.unban_ip_best_effort("192.0.2.66").await.unwrap();
+        assert_eq!(released, 2);
+        assert!(engine.active_bans().unwrap().is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_unban_all_releases_every_block() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(pool.clone(), test_config())
+            .with_local_context(LocalIpContext::empty());
+
+        for ip in ["192.0.2.70", "192.0.2.71"] {
+            record_offense_occurrence(
+                &pool,
+                &NewIpOffense {
+                    id: Uuid::new_v4().to_string(),
+                    ip_address: ip.into(),
+                    source_type: "cli".into(),
+                    container_id: None,
+                    first_seen: Utc::now(),
+                    reason: "test".into(),
+                    metadata: None,
+                },
+                Utc::now() - Duration::minutes(5),
+            )
+            .unwrap();
+            mark_blocked(&pool, ip, "cli", Utc::now() + Duration::minutes(30)).unwrap();
+        }
+
+        let released = engine.unban_all().await.unwrap();
+        assert_eq!(released, 2);
+        assert!(engine.active_bans().unwrap().is_empty());
     }
 }

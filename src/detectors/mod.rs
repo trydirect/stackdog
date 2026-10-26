@@ -294,6 +294,9 @@ impl LogDetector for LoginBruteForceDetector {
     }
 
     fn detect(&self, entries: &[LogEntry]) -> Vec<DetectorFinding> {
+        // No bare "401": a service answering 401 to a misconfigured health
+        // check or a peer retrying with a stale token logs it constantly, and
+        // five such lines used to read as a brute-force attempt.
         let matches = matching_entries(
             entries,
             &[
@@ -302,7 +305,6 @@ impl LogDetector for LoginBruteForceDetector {
                 "invalid user",
                 "login failed",
                 "too many login failures",
-                "401",
             ],
         );
 
@@ -808,6 +810,28 @@ mod tests {
         assert_eq!(
             anomalies[0].detector_id.as_deref(),
             Some("web.login-bruteforce")
+        );
+    }
+
+    #[test]
+    fn test_bare_401_noise_is_not_bruteforce() {
+        // Inter-service chatter: auth endpoints answer 401 all day without
+        // anyone attacking. Microservice stacks must not trip this detector.
+        let registry = DetectorRegistry::default();
+        let anomalies = registry.detect_log_anomalies(&make_entries(&[
+            "10.0.0.5 - - \"GET /api/me HTTP/1.1\" 401 12",
+            "10.0.0.6 - - \"GET /api/me HTTP/1.1\" 401 12",
+            "10.0.0.5 - - \"GET /api/me HTTP/1.1\" 401 12",
+            "10.0.0.7 - - \"GET /api/me HTTP/1.1\" 401 12",
+            "10.0.0.6 - - \"GET /api/me HTTP/1.1\" 401 12",
+        ]));
+
+        assert!(
+            !anomalies
+                .iter()
+                .any(|anomaly| anomaly.detector_id.as_deref() == Some("web.login-bruteforce")),
+            "plain 401 lines must not read as a login attack: {:?}",
+            anomalies
         );
     }
 

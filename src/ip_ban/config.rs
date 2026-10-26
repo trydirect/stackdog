@@ -23,6 +23,14 @@ pub struct IpBanConfig {
     /// means the log was misread, not that a dozen attackers arrived together.
     /// Zero disables the ceiling.
     pub max_bans_per_minute: u32,
+    /// Never ban addresses that belong to this machine or its containers:
+    /// host interface addresses, docker network subnets.
+    ///
+    /// A DROP rule for one of those severs the service from its own pieces —
+    /// the firewall matches traffic in both directions, so banning the host's
+    /// address or a container peer takes the whole stack down. Off only when
+    /// an operator has a reason to block a local address deliberately.
+    pub protect_local_ips: bool,
 }
 
 impl IpBanConfig {
@@ -44,6 +52,7 @@ impl IpBanConfig {
                 &env::var("STACKDOG_IP_BAN_ALLOWLIST").unwrap_or_default(),
             ),
             max_bans_per_minute: parse_u32_env("STACKDOG_IP_BAN_MAX_PER_MINUTE", 10),
+            protect_local_ips: parse_bool_env("STACKDOG_IP_BAN_PROTECT_LOCAL_IPS", true),
         }
     }
 
@@ -65,7 +74,7 @@ impl IpBanConfig {
     }
 }
 
-fn in_cidr(ip: &Ipv4Addr, network: &Ipv4Addr, prefix_len: u8) -> bool {
+pub(crate) fn in_cidr(ip: &Ipv4Addr, network: &Ipv4Addr, prefix_len: u8) -> bool {
     if prefix_len == 0 {
         return true;
     }
@@ -143,6 +152,7 @@ mod tests {
             trusted_proxy_ranges: vec![],
             allowlist_ranges: parse_cidr_list("167.233.9.19,192.168.0.0/16"),
             max_bans_per_minute: 10,
+            protect_local_ips: true,
         };
 
         assert!(config.is_allowlisted(&"167.233.9.19".parse().unwrap()));

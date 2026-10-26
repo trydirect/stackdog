@@ -145,6 +145,14 @@ impl SniffOrchestrator {
     pub async fn run_once(&self) -> Result<SniffPassResult> {
         let mut result = SniffPassResult::default();
 
+        // Expired bans are released here too, not only in `stackdog serve`:
+        // a sniff-only deployment bans, and must be able to unban.
+        if let Some(engine) = &self.ip_ban {
+            if let Err(err) = engine.unban_expired().await {
+                log::warn!("IP ban unban pass failed: {}", err);
+            }
+        }
+
         self.report_detector_batch(
             &mut result,
             "file-integrity",
@@ -520,8 +528,14 @@ impl SniffOrchestrator {
     }
 
     /// Run the sniff loop (continuous or one-shot)
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         log::info!("🔍 Sniff orchestrator started");
+
+        // Docker subnets join the ban gate once the async runtime is up:
+        // addresses of our own containers must never be banned.
+        if let Some(engine) = self.ip_ban.as_mut() {
+            engine.refresh_local_context().await;
+        }
 
         loop {
             match self.run_once().await {
@@ -1073,6 +1087,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let source = LogSource::new(
@@ -1311,6 +1326,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
 
@@ -1374,6 +1390,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let summary = make_summary(
@@ -1422,6 +1439,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let summary = make_summary(
@@ -1496,6 +1514,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let summary = make_detector_summary(
@@ -1535,6 +1554,7 @@ mod tests {
                 trusted_proxy_ranges: vec![],
                 allowlist_ranges: vec![],
                 max_bans_per_minute: 0,
+                protect_local_ips: true,
             },
         );
         let summary = make_summary(

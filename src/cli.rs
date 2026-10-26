@@ -31,6 +31,12 @@ pub enum Command {
 
     /// Ban an IP address immediately
     BanIp(BanIpCommand),
+
+    /// Release a ban and remove its firewall rules
+    Unban(UnbanCommand),
+
+    /// Inspect and repair the Stackdog firewall rules
+    Firewall(FirewallCommand),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -45,6 +51,36 @@ pub struct BanIpCommand {
     /// Reason for the ban
     #[arg(long, default_value = "manual ban")]
     pub reason: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UnbanCommand {
+    /// IPv4 address to release
+    #[arg(required_unless_present = "all")]
+    pub ip_address: Option<String>,
+
+    /// Release every ban and remove every Stackdog firewall rule
+    #[arg(long)]
+    pub all: bool,
+
+    /// Reason for the release
+    #[arg(long, default_value = "manual unban")]
+    pub reason: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FirewallCommand {
+    #[command(subcommand)]
+    pub command: FirewallSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum FirewallSubcommand {
+    /// List the addresses the Stackdog firewall is blocking
+    List,
+
+    /// Reconcile firewall rules with the database (drop orphans, restore gaps)
+    Reconcile,
 }
 
 #[derive(Args, Debug, Clone)]

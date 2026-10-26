@@ -76,6 +76,39 @@ Three settings are worth reviewing after upgrading:
 To ban only on deterministic detectors and never on analyzer prose, set
 `STACKDOG_IP_BAN_FROM_AI_FINDINGS=false`.
 
+### Infrastructure addresses can no longer be banned
+
+In a microservice stack the ban plane used to turn on the application itself:
+
+- a service calling its peers over published ports or a load balancer logged
+  the peer's address, and a wrong ban dropped it in `INPUT` **and** `FORWARD` —
+  the service lost its own components;
+- `stackdog ban-ip` and the AI `ban_ip` tool accepted any string, CIDR ranges
+  included, and skipped the allowlist — `iptables -s 172.16.0.0/12 -j DROP`
+  would take down a Docker network;
+- a crash between the firewall write and the database write left a DROP rule
+  nothing would ever remove, and there was no way to clear it.
+
+Every ban path now refuses addresses that belong to you: CIDR ranges, private
+and loopback addresses, allowlist entries, and the addresses of this host and
+its containers (`STACKDOG_IP_BAN_PROTECT_LOCAL_IPS`, on by default). Rules are
+tagged and reconciled against the database on every start.
+
+If the network is blocked and you need it back **now**:
+
+```bash
+stackdog firewall list          # what is blocking what
+stackdog unban <ip>             # release one address, rules or no rules
+stackdog unban --all            # remove every Stackdog rule, release every ban
+stackdog firewall reconcile     # drop orphans, restore missing rules
+```
+
+Two related changes: bare `401` lines no longer count as a brute-force attempt,
+and the mail abuse guard quarantines a container only when it is actually
+observing outbound SMTP (`STACKDOG_MAIL_GUARD_REQUIRE_SMTP`, on by default) —
+the traffic heuristic alone matches ordinary service chatter, and quarantine is
+a network disconnect that needs manual release.
+
 ### The offense table is rewritten on first start
 
 `ip_offenses` held one row per detection with `offense_count` stuck at `1`, so
