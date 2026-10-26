@@ -199,7 +199,7 @@ export default function HomePage() {
         <div className="site-container">
           <div className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
             <div>
-              <span className="eyebrow">Stackdog Security v0.2.4</span>
+              <span className="eyebrow">Stackdog Security v0.2.5</span>
               <h1 className="mt-6 max-w-4xl text-balance text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
                 AI-Powered Security for Docker Containers &amp; Linux Servers
               </h1>

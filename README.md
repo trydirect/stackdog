@@ -1,6 +1,6 @@
 # Stackdog Security
 
-![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)
+![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey.svg)
@@ -178,7 +178,7 @@ curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh 
 
 Pin a specific version:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.2
+curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.5
 ```
 
 If your repository has no published stable release yet, use `--version` explicitly.

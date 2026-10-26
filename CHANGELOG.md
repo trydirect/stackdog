@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-26
+
 ### Fixed
 
 - **Infrastructure addresses can no longer be banned.** Every ban path (log

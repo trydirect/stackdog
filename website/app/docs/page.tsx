@@ -8,7 +8,7 @@ import { buildDocsStructuredData, toJsonLd } from '@/lib/structured-data';
 const installCurl =
   'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash';
 const installPinned =
-  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.4';
+  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.5';
 const installDocker = `docker run --rm -it \\
   --name stackdog \\
   --network host \\
