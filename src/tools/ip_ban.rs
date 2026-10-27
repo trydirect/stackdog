@@ -27,7 +27,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         tool_def(
             "ban_ip",
-            "Ban an IP address for a specified duration. Use when an attack is confirmed and the IP should be blocked immediately. Only plain public IPv4 addresses can be banned: private, local, and allowlisted addresses are refused because blocking them takes the service down.",
+            "Ban an IP address for a specified duration. Use ONLY when a confirmed attack is in the evidence: SQL injection, path traversal, brute force, webshell, SSRF, credential stuffing, exploit attempts. Port scans, repeated connection attempts, and other background noise are alert-only — report them, do not ban. Only plain public IPv4 addresses can be banned: private, local, and allowlisted addresses are refused because blocking them takes the service down.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -304,7 +304,7 @@ mod tests {
         let result = execute_ban_ip(
             &pool,
             &config,
-            r#"{"ip_address": "5.6.7.8", "reason": "test ban", "duration_secs": 60}"#,
+            r#"{"ip_address": "5.6.7.8", "reason": "sql injection attempt", "duration_secs": 60}"#,
         )
         .await;
 
@@ -336,7 +336,7 @@ mod tests {
         let result = execute_ban_ip(
             &pool,
             &config,
-            r#"{"ip_address": "9.10.11.12", "reason": "test"}"#,
+            r#"{"ip_address": "9.10.11.12", "reason": "path traversal probe"}"#,
         )
         .await;
 
@@ -366,7 +366,7 @@ mod tests {
             let result = execute_ban_ip(
                 &pool,
                 &config,
-                &format!(r#"{{"ip_address": "{ip}", "reason": "test"}}"#),
+                &format!(r#"{{"ip_address": "{ip}", "reason": "path traversal probe"}}"#),
             )
             .await;
             assert!(
@@ -386,7 +386,7 @@ mod tests {
         let banned = execute_ban_ip(
             &pool,
             &config,
-            r#"{"ip_address": "5.6.7.8", "reason": "test", "duration_secs": 60}"#,
+            r#"{"ip_address": "5.6.7.8", "reason": "path traversal probe", "duration_secs": 60}"#,
         )
         .await;
 

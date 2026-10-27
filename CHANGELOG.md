@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The AI `ban_ip` tool must name a confirmed attack.** It banned addresses
+  for "repeated connection attempts" — background internet noise the auto path
+  deliberately ignores. Weak reasons are now refused with a message telling the
+  model to report an alert instead, tool-driven bans respect the per-minute
+  ceiling (the CLI stays exempt), and the tool description says what counts as
+  a confirmed attack.
+- **Alerts say which host sent them.** The Slack "Instance" field comes from
+  `STACKDOG_NOTIFICATION_LABEL`, and now falls back to the machine hostname
+  when the label is unset — an unattributable alert is half an alert in a fleet.
+
 ## [0.2.5] - 2026-10-26
 
 ### Fixed

@@ -442,7 +442,11 @@ impl IpBanEngine {
     ///
     /// One confirmed attack is enough for a human or the AI assistant. Not
     /// enough to skip the gate, though: the same infrastructure addresses are
-    /// off-limits here, and a CIDR range is refused just as hard.
+    /// off-limits here, and a CIDR range is refused just as hard. And while a
+    /// human's judgment overrides the phrase policy (`source_type: "cli"`), the
+    /// AI tool must name a concrete attack — "repeated connection attempts" is
+    /// what the internet does all day, and banning on it catches crawlers and
+    /// health checkers along with scanners.
     pub async fn ban_now(
         &self,
         ip: &str,
@@ -452,6 +456,24 @@ impl IpBanEngine {
     ) -> Result<BanOutcome> {
         if let Some(refusal) = gate::refuse_reason(ip, &self.config, &self.local_context) {
             return Ok(BanOutcome::Refused(refusal));
+        }
+
+        // Tool-driven bans get the same ceiling as sniff-driven ones: a burst
+        // of blocks in one second means one misread finding, not a crowd of
+        // attackers. An operator at the CLI is the one exception.
+        let automated = source_type != "cli";
+        if automated && !gate::names_confirmed_attack(reason) {
+            log::info!(
+                "Refusing to ban {} ({}): {}",
+                ip,
+                reason,
+                BanRefusal::WeakEvidence.reason()
+            );
+            return Ok(BanOutcome::Refused(BanRefusal::WeakEvidence));
+        }
+        if automated && !self.ban_budget_available(Utc::now()) {
+            log::warn!("Ban ceiling reached; refusing to ban {} ({})", ip, reason);
+            return Ok(BanOutcome::Refused(BanRefusal::BudgetExhausted));
         }
 
         if active_block_for_ip(&self.pool, ip)?.is_some() {
@@ -1260,5 +1282,93 @@ mod tests {
         let released = engine.unban_all().await.unwrap();
         assert_eq!(released, 2);
         assert!(engine.active_bans().unwrap().is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_now_refuses_weak_reasons_from_tools() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(pool.clone(), test_config())
+            .with_local_context(LocalIpContext::empty());
+
+        // Exactly what the AI used to ban four addresses for in one pass.
+        let outcome = engine
+            .ban_now(
+                "192.0.2.80",
+                "repeated connection attempts",
+                "ai-tool",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, BanOutcome::Refused(BanRefusal::WeakEvidence));
+        assert!(engine.active_bans().unwrap().is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_now_lets_the_cli_ban_on_any_reason() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let engine = IpBanEngine::new(pool.clone(), test_config())
+            .with_local_context(LocalIpContext::empty());
+
+        // A human at the terminal overrides the phrase policy.
+        let outcome = engine
+            .ban_now("192.0.2.81", "repeated connection attempts", "cli", None)
+            .await;
+
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            match outcome {
+                Ok(BanOutcome::Refused(BanRefusal::WeakEvidence)) => {
+                    panic!("cli bans are not held to the phrase policy")
+                }
+                // Firewall write fails without CAP_NET_ADMIN: the request got
+                // past the policy, which is all this test is about.
+                Err(_) | Ok(_) => {}
+            }
+            return;
+        }
+
+        let outcome = outcome.unwrap();
+        assert!(matches!(outcome, BanOutcome::Banned { .. }));
+    }
+
+    #[actix_rt::test]
+    async fn test_ban_now_holds_tools_to_the_ban_budget() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let config = IpBanConfig {
+            max_bans_per_minute: 1,
+            ..test_config()
+        };
+        let engine =
+            IpBanEngine::new(pool.clone(), config).with_local_context(LocalIpContext::empty());
+
+        let first = engine
+            .ban_now("192.0.2.82", "sql injection attempt", "ai-tool", None)
+            .await;
+
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            let _ = first;
+            return;
+        }
+
+        let first = first.unwrap();
+        assert!(matches!(first, BanOutcome::Banned { .. }));
+
+        let second = engine
+            .ban_now("192.0.2.83", "sql injection attempt", "ai-tool", None)
+            .await
+            .unwrap();
+        assert_eq!(second, BanOutcome::Refused(BanRefusal::BudgetExhausted));
+
+        // The operator is the documented exception to the ceiling.
+        let third = engine
+            .ban_now("192.0.2.84", "sql injection attempt", "cli", None)
+            .await
+            .unwrap();
+        assert!(matches!(third, BanOutcome::Banned { .. }));
     }
 }

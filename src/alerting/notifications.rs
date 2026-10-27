@@ -122,7 +122,10 @@ impl NotificationConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
-            notification_label: env::var("STACKDOG_NOTIFICATION_LABEL").ok(),
+            notification_label: env::var("STACKDOG_NOTIFICATION_LABEL")
+                .ok()
+                .filter(|label| !label.trim().is_empty())
+                .or_else(detect_hostname),
             minimum_severity: env::var("STACKDOG_NOTIFICATION_MIN_SEVERITY")
                 .ok()
                 .and_then(|value| parse_alert_severity(&value))
@@ -356,6 +359,25 @@ fn parse_alert_severity(value: &str) -> Option<AlertSeverity> {
         "critical" => Some(AlertSeverity::Critical),
         _ => None,
     }
+}
+
+/// Best-effort identity of the machine an alert came from, for when
+/// `STACKDOG_NOTIFICATION_LABEL` is not set. An alert nobody can attribute to
+/// a host is half an alert in a fleet.
+fn detect_hostname() -> Option<String> {
+    if let Ok(name) = env::var("HOSTNAME") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    if let Ok(name) = std::fs::read_to_string("/etc/hostname") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 fn is_action_alert(alert: &crate::database::models::Alert) -> bool {
@@ -1055,6 +1077,45 @@ mod tests {
         assert!(fields
             .iter()
             .any(|field| { field["title"] == "Instance" && field["value"] == "prod-eu-1" }));
+    }
+
+    #[test]
+    fn test_notification_label_falls_back_to_hostname() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+        let previous_hostname = env::var("HOSTNAME").ok();
+
+        // Without an explicit label the alert must still say which machine it
+        // came from — an unattributable alert is half an alert in a fleet.
+        env::set_var("HOSTNAME", "box-1");
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.notification_label(), Some("box-1"));
+
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+        let payload = build_slack_message(&alert, &config);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+        assert!(
+            fields
+                .iter()
+                .any(|field| field["title"] == "Instance" && field["value"] == "box-1"),
+            "hostname fallback must reach the Slack payload: {payload}"
+        );
+
+        // The explicit label still wins.
+        env::set_var("STACKDOG_NOTIFICATION_LABEL", "prod-eu-1");
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.notification_label(), Some("prod-eu-1"));
+
+        clear_notification_env();
+        match previous_hostname {
+            Some(value) => env::set_var("HOSTNAME", value),
+            None => env::remove_var("HOSTNAME"),
+        }
     }
 
     #[tokio::test]

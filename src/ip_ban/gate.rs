@@ -86,7 +86,7 @@ impl LocalIpContext {
     }
 }
 
-/// Why an address must not be banned.
+/// Why a ban request is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BanRefusal {
     /// Not one plain IPv4 address: garbage, IPv6, or a CIDR range. iptables
@@ -100,6 +100,11 @@ pub enum BanRefusal {
     Allowlisted,
     /// An address of this host or a running container.
     LocalInfrastructure,
+    /// The reason names no concrete attack. Ordinary internet background noise
+    /// — scanners, retries, crawlers — deserves an alert, not a firewall rule.
+    WeakEvidence,
+    /// The per-minute ceiling caught the request before the firewall did.
+    BudgetExhausted,
 }
 
 impl BanRefusal {
@@ -115,8 +120,49 @@ impl BanRefusal {
             Self::LocalInfrastructure => {
                 "address belongs to this host or a container (local interface or docker network)"
             }
+            Self::WeakEvidence => {
+                "reason names no confirmed attack — report it as an alert, not a ban"
+            }
+            Self::BudgetExhausted => {
+                "ban ceiling reached for this minute — too many blocks at once to trust"
+            }
         }
     }
+}
+
+/// Phrases that name a concrete attack — the only grounds a ban may rest on
+/// when a human is not standing right there.
+///
+/// Deliberately excluded: "repeated connection attempts", "port scan",
+/// "scanning", "frequent access", "rejected connection", "possible attack".
+/// Every machine on the internet is scanned all day, and a banned scanner is
+/// indistinguishable from a banned crawler, health checker or customer's NAT
+/// — the mistake costs more than the ban saves.
+pub const STRONG_ATTACK_PHRASES: &[&str] = &[
+    "brute-force",
+    "brute force",
+    "failed ssh login",
+    "failed login attempts",
+    "authentication failures",
+    "invalid user",
+    "path traversal",
+    "credential scanning",
+    "credential stuffing",
+    "sensitive file access",
+    "sql injection",
+    "ssrf",
+    "metadata access",
+    "webshell",
+    "exploit attempt",
+    "coordinated attack",
+];
+
+/// Whether `reason` names one of [`STRONG_ATTACK_PHRASES`].
+pub fn names_confirmed_attack(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    STRONG_ATTACK_PHRASES
+        .iter()
+        .any(|needle| reason.contains(needle))
 }
 
 /// Why `raw` must not be banned, if it must not.
@@ -340,5 +386,35 @@ mod tests {
     fn test_parse_interface_ips_tolerates_junk() {
         assert!(parse_interface_ips("not json at all").is_empty());
         assert!(parse_interface_ips("").is_empty());
+    }
+
+    #[test]
+    fn test_only_confirmed_attacks_pass_the_phrase_gate() {
+        for reason in [
+            "SQL injection attempt in /search",
+            "path traversal probe for .env",
+            "brute-force against /login",
+            "webshell upload detected",
+        ] {
+            assert!(
+                names_confirmed_attack(reason),
+                "{reason} names a concrete attack"
+            );
+        }
+
+        for reason in [
+            "repeated connection attempts",
+            "port scan",
+            "scanning",
+            "frequent access",
+            "rejected connection",
+            "possible attack",
+            "high traffic volume",
+        ] {
+            assert!(
+                !names_confirmed_attack(reason),
+                "{reason} is background noise, not ban grounds"
+            );
+        }
     }
 }

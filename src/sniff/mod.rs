@@ -15,7 +15,7 @@ use crate::database::connection::{create_pool, init_database, DbPool};
 use crate::database::repositories::log_sources as log_sources_repo;
 use crate::detectors::DetectorRegistry;
 use crate::docker::DockerClient;
-use crate::ip_ban::{IpBanConfig, IpBanEngine, OffenseInput};
+use crate::ip_ban::{gate, IpBanConfig, IpBanEngine, OffenseInput};
 use crate::sniff::analyzer::{LogAnalyzer, PatternAnalyzer};
 use crate::sniff::config::SniffConfig;
 use crate::sniff::consumer::LogConsumer;
@@ -595,31 +595,13 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         return false;
     }
 
-    // Phrases specific enough to name an attack. Deliberately excluded:
-    // "frequent access", "targeting", "possible attack", "rejected connection",
-    // "scanning" — an analyzer writing free text produces those about ordinary
-    // traffic, and each one banned real visitors.
-    let description = anomaly.description.to_ascii_lowercase();
-    [
-        "brute-force",
-        "brute force",
-        "failed ssh login",
-        "failed login attempts",
-        "authentication failures",
-        "invalid user",
-        "path traversal",
-        "credential scanning",
-        "credential stuffing",
-        "sensitive file access",
-        "sql injection",
-        "ssrf",
-        "metadata access",
-        "webshell",
-        "exploit attempt",
-        "coordinated attack",
-    ]
-    .iter()
-    .any(|needle| description.contains(needle))
+    // Phrases specific enough to name an attack — the shared list in
+    // `ip_ban::gate`, so the sniff path and the AI tool ban on the same
+    // grounds. Deliberately excluded: "frequent access", "targeting",
+    // "possible attack", "rejected connection", "scanning" — an analyzer
+    // writing free text produces those about ordinary traffic, and each one
+    // banned real visitors.
+    gate::names_confirmed_attack(&anomaly.description)
 }
 
 /// If `ip` is a trusted proxy, try to extract the real client IP from
