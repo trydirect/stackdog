@@ -22,7 +22,7 @@ use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInvento
 use self::http_request::{extract_request, HttpRequest};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
-use self::php2shell::{PhpVersionMonitor, PhpWorkerCrashDetector};
+use self::php2shell::{Php2ShellAttemptDetector, PhpVersionMonitor, PhpWorkerCrashDetector};
 use self::php_shell::{
     ContainerFilesystem, PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot,
 };
@@ -146,6 +146,7 @@ impl DetectorRegistry {
             self.php_shell_scanner.flagged_files(),
         ));
         self.register(PhpWorkerCrashDetector);
+        self.register(Php2ShellAttemptDetector);
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {

@@ -623,18 +623,39 @@ fix is upgrading PHP; Stackdog tells you where you still have to.
 |---|---|---|
 | `vuln.php2shell` | a PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older | Critical alert for upstream builds (official `php` images, read from `PHP_VERSION`); Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number |
 | `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1–2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
+| `web.php2shell-attempt` | the exploit's out-of-memory step, with the client address: Apache `[client …] PHP Fatal error: Allowed memory size … in Unknown on line 0`; nginx `upstream sent unexpected FastCGI record … client: …, request: "POST …"` (php-fpm); or the public scanner's `php2shell-…` User-Agent | alert + an offense per line, so a client causing 5 within the ban window is banned in the pass that reads them |
 
 The version check reads `php8.x-common` (Debian, Ubuntu) and `php8x-common` or `php8x` (Alpine)
 from the package database on the host and inside each running container, and
 `PHP_VERSION` from container environments. RPM-based hosts are not covered.
-Neither finding names a client, so neither bans. Turn the version check off
-with `STACKDOG_PHP_VERSION_CHECK_ENABLED=false`.
+The version and crash findings name no client, so they never ban. Turn the
+version check off with `STACKDOG_PHP_VERSION_CHECK_ENABLED=false`.
 
-Crash lines come from php-fpm and Apache error logs. Container logs are read
-on their own (official images send php-fpm errors to stderr); add host logs
-such as `/var/log/php8.3-fpm.log` to `STACKDOG_LOG_SOURCES`.
+`web.php2shell-attempt` bans. Every known PHP2Shell variant pushes PHP past
+`memory_limit` with a multipart POST; when that happens while PHP is still
+parsing the request, the error says `in Unknown on line 0`. An application
+running out of memory names its script and line instead, and is never an
+attempt. The two log formats were reproduced against `php:8.3-apache` and
+`php:8.3-fpm` behind nginx with a benign oversized form POST, not taken from
+exploit traffic. Limits:
 
-Stackdog does not detect the exploit request itself and cannot patch PHP.
+- the exploit can succeed in a few requests, so a ban mostly stops repeats and
+  scanners, not a fast first attempt;
+- the web server error log must be read: Docker container logs are, host logs
+  such as `/var/log/apache2/error.log` and `/var/log/nginx/error.log` go in
+  `STACKDOG_LOG_SOURCES`;
+- behind a CDN or proxy, the error log must record the real client address;
+- the same lines have rare innocent causes. A user posting a giant form to a
+  PHP with a very low `memory_limit` hits the Apache rule (at the default
+  128M that takes a body over 128 MB, which `client_max_body_size` usually
+  stops first). A buggy extension crashing php-fpm on an upload hits the
+  nginx rule. Either way it takes 5 in 5 minutes from one address;
+- the scanner User-Agent comes from one report (Fastly, via Brandefense). If
+  the scanner changes it, that rule goes quiet; the two out-of-memory rules
+  do not depend on it.
+
+Crash lines come from php-fpm and Apache error logs too; add host logs such as
+`/var/log/php8.3-fpm.log`. Stackdog cannot patch PHP: upgrading is the fix.
 
 ---
 

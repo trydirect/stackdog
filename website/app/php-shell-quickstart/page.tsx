@@ -24,7 +24,7 @@ STACKDOG_PHPSHELL_PATHS=/var/www
 STACKDOG_PHP_VERSION_CHECK_ENABLED=true
 # Access logs the bans are read from, and PHP error logs for worker crashes.
 # Paths that do not exist are skipped.
-STACKDOG_LOG_SOURCES=/var/log/nginx/access.log,/var/log/apache2/access.log,/var/log/httpd/access_log,/var/log/apache2/error.log,/var/log/php8.3-fpm.log
+STACKDOG_LOG_SOURCES=/var/log/nginx/access.log,/var/log/apache2/access.log,/var/log/httpd/access_log,/var/log/apache2/error.log,/var/log/nginx/error.log,/var/log/php8.3-fpm.log
 
 # Bans: 5 offenses in 5 minutes, banned for 30 minutes
 STACKDOG_IP_BAN_ENABLED=true
