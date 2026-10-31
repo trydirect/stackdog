@@ -20,8 +20,11 @@ DATABASE_URL=/var/lib/stackdog/stackdog.db
 # PHP shell detection
 STACKDOG_PHPSHELL_ENABLED=true
 STACKDOG_PHPSHELL_PATHS=/var/www
-# Access logs the bans are read from. Paths that do not exist are skipped.
-STACKDOG_LOG_SOURCES=/var/log/nginx/access.log,/var/log/apache2/access.log,/var/log/httpd/access_log
+# PHP2Shell: alert on PHP builds older than the fixed releases
+STACKDOG_PHP_VERSION_CHECK_ENABLED=true
+# Access logs the bans are read from, and PHP error logs for worker crashes.
+# Paths that do not exist are skipped.
+STACKDOG_LOG_SOURCES=/var/log/nginx/access.log,/var/log/apache2/access.log,/var/log/httpd/access_log,/var/log/apache2/error.log,/var/log/php8.3-fpm.log
 
 # Bans: 5 offenses in 5 minutes, banned for 30 minutes
 STACKDOG_IP_BAN_ENABLED=true
@@ -106,7 +109,7 @@ const faqEntries = [
   {
     question: 'Which release do I need?',
     answer:
-      'v0.2.7 or later. The installer picks the latest release by default.'
+      'v0.2.7 or later for PHP shell detection, v0.2.8 or later for the PHP2Shell version check. The installer picks the latest release by default.'
   }
 ];
 

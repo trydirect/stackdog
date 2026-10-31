@@ -209,10 +209,17 @@ fn description_signature(description: &str) -> String {
 /// differently by the model, and that alone should not re-alert. Detector-backed
 /// findings key on their stable `detector_id`; AI-written ones fall back to a
 /// signature of the description.
+///
+/// Findings with no log source come from scans (files, packages, containers),
+/// where one pass reports several distinct things under one detector. Their
+/// `sample_line` names the thing (`host:/var/www/x.php`, `shop image
+/// PHP_VERSION 8.3.30`), so it joins the key. Log findings keep the detector
+/// id alone: their sample is a raw line with a timestamp.
 fn dedup_key(anomaly: &crate::sniff::analyzer::LogAnomaly, source: Option<&LogSource>) -> String {
-    let finding = match &anomaly.detector_id {
-        Some(detector_id) => detector_id.clone(),
-        None => description_signature(&anomaly.description),
+    let finding = match (&anomaly.detector_id, source) {
+        (Some(detector_id), Some(_)) => detector_id.clone(),
+        (Some(detector_id), None) => format!("{}:{}", detector_id, anomaly.sample_line),
+        (None, _) => description_signature(&anomaly.description),
     };
     let source_key = source
         .map(|source| source.path_or_id.as_str())
@@ -391,6 +398,76 @@ mod tests {
         );
 
         assert_eq!(describe_source("file-integrity", None), "file-integrity");
+    }
+
+    fn version_finding(owner: &str) -> LogAnomaly {
+        LogAnomaly {
+            description: format!("PHP 8.3.30 on {} is exposed to PHP2Shell", owner),
+            severity: AnomalySeverity::Critical,
+            sample_line: format!("{} image PHP_VERSION 8.3.30", owner),
+            detector_id: Some("vuln.php2shell".into()),
+            detector_family: Some("Vulnerability".into()),
+            confidence: Some(95),
+            suggested_action: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scan_findings_for_different_things_each_alert_once() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
+
+        // A scan batch has no log source: three installs, three alerts.
+        let summary = make_summary(vec![
+            version_finding("host"),
+            version_finding("blog"),
+            version_finding("shop"),
+        ]);
+        reporter.report(&summary, Some(&pool), None).await.unwrap();
+        assert_eq!(
+            list_alerts(&pool, AlertFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+
+        // The next pass finds the same three: nothing new.
+        reporter.report(&summary, Some(&pool), None).await.unwrap();
+        assert_eq!(
+            list_alerts(&pool, AlertFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_log_findings_ignore_the_sample_line() {
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/nginx/access.log".into(),
+            "access.log".into(),
+        );
+        let first = LogAnomaly {
+            description: "Potential SQL injection probing detected".into(),
+            severity: AnomalySeverity::High,
+            sample_line: "10:00:01 GET /search?q=UNION%20SELECT".into(),
+            detector_id: Some("web.sqli-probe".into()),
+            detector_family: None,
+            confidence: None,
+            suggested_action: None,
+        };
+        let next = LogAnomaly {
+            sample_line: "10:00:31 GET /search?q=UNION%20SELECT".into(),
+            ..first.clone()
+        };
+        assert_eq!(
+            dedup_key(&first, Some(&source)),
+            dedup_key(&next, Some(&source))
+        );
     }
 
     #[test]

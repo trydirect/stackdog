@@ -110,6 +110,8 @@ pub struct ContainerFilesystem {
     pub mounts: Vec<(String, String)>,
     /// overlay2 `MergedDir`: the container's root filesystem on the host.
     pub merged_dir: Option<String>,
+    /// `PHP_VERSION` from the container environment, set by official PHP images.
+    pub php_version: Option<String>,
 }
 
 /// A file the scanner flagged, as the access detector needs to know it.

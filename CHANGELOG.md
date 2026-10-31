@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-31
+
+### Added
+
+- PHP2Shell exposure check (CVE-2026-109618, CVE-2026-109619). Each sniff pass
+  reads the PHP version on the host and in running containers (package
+  database, and `PHP_VERSION` for official images) and alerts on builds older
+  than 8.2.35, 8.3.36, 8.4.27 or 8.5.12 (`vuln.php2shell`). Distribution
+  packages get a "check your vendor" alert instead, because backports keep the
+  old version number. `STACKDOG_PHP_VERSION_CHECK_ENABLED=false` turns it off.
+- `php.worker-crash`: an alert when php-fpm or Apache workers keep dying on
+  memory faults, which is what attempts against PHP memory bugs leave behind.
+  Neither finding bans.
+
+### Fixed
+
+- Scan findings (file integrity, PHP shell files, package and posture checks)
+  shared one dedup key per detector, so when a pass found several distinct
+  things, only the first alerted and the rest were dropped. They now key on
+  what they found; log findings still key on the detector alone.
+
 ## [0.2.7] - 2026-10-31
 
 ### Added

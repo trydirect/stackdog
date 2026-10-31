@@ -190,10 +190,10 @@ impl SniffOrchestrator {
         let mut container_filesystems = Vec::new();
         match DockerClient::new().await {
             Ok(docker) => {
-                if self.config.phpshell_enabled {
+                if self.config.phpshell_enabled || self.config.php_version_check_enabled {
                     match docker.list_container_filesystems().await {
                         Ok(filesystems) => container_filesystems = filesystems,
-                        Err(err) => log::debug!("Skipping container PHP shell roots: {}", err),
+                        Err(err) => log::debug!("Skipping container PHP checks: {}", err),
                     }
                 }
                 let postures = docker.list_container_postures(true).await?;
@@ -235,6 +235,21 @@ impl SniffOrchestrator {
                     &roots,
                     &self.config.phpshell_options,
                 )?,
+            )
+            .await?;
+        }
+
+        if self.config.php_version_check_enabled {
+            let anomalies = self.detectors.detect_php_version_anomalies(
+                &container_filesystems,
+                self.config.host_root.as_deref(),
+            );
+            self.report_detector_batch(
+                &mut result,
+                "php-version",
+                container_filesystems.len() + 1,
+                "PHP2Shell version check",
+                anomalies,
             )
             .await?;
         }
@@ -629,8 +644,11 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         }
         // Alert-only by policy. Their descriptions carry file and URL paths,
         // and a shell named `webshell.php` would otherwise pass the phrase
-        // check below.
-        if matches!(detector_id, "php.shell-file" | "php.shell-request") {
+        // check below. The PHP2Shell findings name no client at all.
+        if matches!(
+            detector_id,
+            "php.shell-file" | "php.shell-request" | "vuln.php2shell" | "php.worker-crash"
+        ) {
             return false;
         }
     }
@@ -1577,7 +1595,12 @@ mod tests {
 
     #[test]
     fn test_php_alert_only_findings_never_ban_whatever_the_wording() {
-        for detector_id in ["php.shell-file", "php.shell-request"] {
+        for detector_id in [
+            "php.shell-file",
+            "php.shell-request",
+            "vuln.php2shell",
+            "php.worker-crash",
+        ] {
             let anomaly = LogAnomaly {
                 description: "Request to a file flagged as a PHP shell: GET /webshell.php".into(),
                 severity: AnomalySeverity::High,

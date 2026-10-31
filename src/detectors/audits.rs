@@ -318,7 +318,7 @@ fn uncommented_lines(content: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_dpkg_status(content: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_dpkg_status(content: &str) -> Vec<(String, String)> {
     let mut packages = Vec::new();
 
     for stanza in content.split("\n\n") {
@@ -341,7 +341,7 @@ fn parse_dpkg_status(content: &str) -> Vec<(String, String)> {
     packages
 }
 
-fn parse_apk_installed(content: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_apk_installed(content: &str) -> Vec<(String, String)> {
     let mut packages = Vec::new();
     let mut package = None;
     let mut version = None;

@@ -1,7 +1,7 @@
 {
   "name": "stackdog-web",
   "description": "Stackdog Security Web Dashboard",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "scripts": {
     "start": "cross-env REACT_APP_VERSION=$npm_package_version webpack serve --mode development",
     "build": "cross-env REACT_APP_VERSION=$npm_package_version webpack --mode production",

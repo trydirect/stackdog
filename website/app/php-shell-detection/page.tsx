@@ -60,6 +60,19 @@ const responseRows = [
   ]
 ] as const;
 
+const php2shellRows = [
+  [
+    'vuln.php2shell',
+    'A PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older, on the host or in a running container',
+    'Critical alert for upstream builds such as official php images. Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number.'
+  ],
+  [
+    'php.worker-crash',
+    'Three or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass. One or two per pass never alert, so a single flaky extension stays quiet.',
+    'Alert. Repeated crashes are what attempts against PHP memory bugs leave behind.'
+  ]
+] as const;
+
 const envRows = [
   ['STACKDOG_PHPSHELL_ENABLED', 'true', 'Turn PHP shell detection on or off: both the file scan and the access-log detector.'],
   ['STACKDOG_PHPSHELL_PATHS', '/var/www', 'Host web roots to scan, comma-separated. Containers are found on their own.'],
@@ -71,7 +84,8 @@ const envRows = [
   ['STACKDOG_HOST_ROOT', '/host', 'Where the host filesystem is mounted when Stackdog runs in Docker. Needed for host paths and container docroots.'],
   ['STACKDOG_PHPSHELL_SKIP_DIRS', 'vendor,node_modules,.git', 'Directory names never descended into.'],
   ['STACKDOG_PHPSHELL_MAX_FILE_BYTES', '2097152', 'Bytes read per file. Larger files are scored on their first 2 MB.'],
-  ['STACKDOG_PHPSHELL_SIGNATURES', '/etc/stackdog/php-shell-signatures.json', 'Extra signatures in JSON, added to the built-in ones.']
+  ['STACKDOG_PHPSHELL_SIGNATURES', '/etc/stackdog/php-shell-signatures.json', 'Extra signatures in JSON, added to the built-in ones.'],
+  ['STACKDOG_PHP_VERSION_CHECK_ENABLED', 'true', 'Alert on PHP builds older than the PHP2Shell fixes, on the host and in containers.']
 ] as const;
 
 const composeSnippet = `services:
@@ -246,7 +260,7 @@ export default function PhpShellDetectionPage() {
                 'How Stackdog finds PHP webshells in host and container web roots and bans the clients driving them.',
               url: getSiteUrl() + PAGE_PATH,
               about: ['PHP webshells', 'Web server security', 'Docker security', 'Automated IP banning'],
-              sections: ['How it works', 'Signals', 'Response', 'Setup', 'Configuration', 'Incident runbook']
+              sections: ['How it works', 'Signals', 'Response', 'PHP2Shell', 'Setup', 'Configuration', 'Incident runbook']
             })
           )
         }}
@@ -350,7 +364,30 @@ export default function PhpShellDetectionPage() {
         </div>
       </section>
 
-      <section id="setup" className="section-shell scroll-mt-24">
+      <section id="php2shell" className="section-shell scroll-mt-24">
+        <div className="site-container">
+          <span className="eyebrow">PHP2Shell</span>
+          <h2 className="section-heading mt-6">CVE-2026-109618 and CVE-2026-109619: find what still needs upgrading</h2>
+          <p className="section-copy">
+            PHP2Shell is unauthenticated remote code execution in the PHP interpreter itself, so no
+            file scan or log rule can fix it: the fix is upgrading PHP. Stackdog reads the PHP version
+            on the host and in every running container, from the package database and from the{' '}
+            <code>PHP_VERSION</code> variable of official images, and tells you which ones are behind.
+            It also watches for PHP workers that keep crashing. Neither finding names an attacker, so
+            neither bans, and Stackdog does not detect the exploit request itself.
+          </p>
+          <div className="mt-10">
+            <DataTable headers={['Finding', 'When', 'Action']} rows={php2shellRows} />
+          </div>
+          <p className="mt-6 text-sm leading-7 text-slate-400">
+            Covered: Debian and Ubuntu (<code>php8.x-common</code>), Alpine (<code>php8x-common</code>) and
+            official <code>php</code> images. RPM-based hosts are not read yet. A shell an attacker
+            drops after getting in is still caught by the file scan above.
+          </p>
+        </div>
+      </section>
+
+      <section id="setup" className="section-shell scroll-mt-24 border-y border-slate-800/70 bg-slate-900/30">
         <div className="site-container">
           <span className="eyebrow">Setup</span>
           <h2 className="section-heading mt-6">Host web roots and PHP containers</h2>
@@ -382,7 +419,7 @@ export default function PhpShellDetectionPage() {
         </div>
       </section>
 
-      <section id="configuration" className="section-shell scroll-mt-24 border-y border-slate-800/70 bg-slate-900/30">
+      <section id="configuration" className="section-shell scroll-mt-24">
         <div className="site-container">
           <span className="eyebrow">Configuration</span>
           <h2 className="section-heading mt-6">Settings</h2>
@@ -404,7 +441,7 @@ export default function PhpShellDetectionPage() {
         </div>
       </section>
 
-      <section id="runbook" className="section-shell scroll-mt-24">
+      <section id="runbook" className="section-shell scroll-mt-24 border-y border-slate-800/70 bg-slate-900/30">
         <div className="site-container">
           <span className="eyebrow">Incident runbook</span>
           <h2 className="section-heading mt-6">When a shell is found</h2>
@@ -420,7 +457,7 @@ export default function PhpShellDetectionPage() {
         </div>
       </section>
 
-      <section id="faq" className="section-shell scroll-mt-24 border-t border-slate-800/70 bg-slate-900/30">
+      <section id="faq" className="section-shell scroll-mt-24">
         <div className="site-container">
           <span className="eyebrow">FAQ</span>
           <h2 className="section-heading mt-6">Questions operators ask</h2>
