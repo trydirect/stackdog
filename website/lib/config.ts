@@ -1,4 +1,4 @@
-const DEFAULT_SITE_URL = 'https://stackdog.stacker.my';
+const DEFAULT_SITE_URL = 'https://stackdog.app';
 const DEFAULT_GA_MEASUREMENT_ID = 'G-1ERSVH1L4D';
 
 export function getSiteUrl(): string {

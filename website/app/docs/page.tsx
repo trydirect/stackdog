@@ -8,7 +8,7 @@ import { buildDocsStructuredData, toJsonLd } from '@/lib/structured-data';
 const installCurl =
   'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash';
 const installPinned =
-  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.6';
+  'curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.7';
 const installDocker = `docker run --rm -it \\
   --name stackdog \\
   --network host \\
@@ -87,7 +87,7 @@ const envRows = [
   ['STACKDOG_NOTIFICATION_LABEL', 'prod-eu-1', 'Instance label added to every alert so you can tell hosts apart.'],
   ['STACKDOG_UI_URL', 'https://stackdog.example.com', 'Dashboard base URL. Adds a link to the alert in every notification.'],
   ['STACKDOG_SLACK_USERNAME', 'Stackdog', 'Display name on Slack messages (legacy webhooks or chat:write.customize).'],
-  ['STACKDOG_SLACK_ICON_URL', 'https://stackdog.stacker.my/stackdog-mark.png', 'Avatar image for Slack messages.'],
+  ['STACKDOG_SLACK_ICON_URL', 'https://stackdog.app/stackdog-mark.png', 'Avatar image for Slack messages.'],
   ['STACKDOG_AI_TIMEOUT_SECS', '300', 'Timeout for AI requests. 0 disables it for very slow local models.'],
   ['STACKDOG_AI_MAX_TOKENS', '2048', 'Response token ceiling. 0 lets the provider decide.'],
   ['STACKDOG_AI_COOLDOWN_SECS', '300', 'Minimum gap between AI calls for the same source, to limit token spend.'],

