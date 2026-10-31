@@ -1,6 +1,6 @@
 # Stackdog Security - Documentation Index
 
-**Version:** 0.2.8  
+**Version:** 0.2.9  
 **Last Updated:** 2026-04-07  
 
 ---
