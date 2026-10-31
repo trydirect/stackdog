@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Running in Docker, mount the host read-only and set `STACKDOG_HOST_ROOT`.
   Extra signatures load from JSON (`STACKDOG_PHPSHELL_SIGNATURES`).
 
+### Fixed
+
+- `web.webshell-probe` matched its indicators anywhere in a log line, so `c99`
+  inside a request id or token in stacker's agent request logs raised a
+  webshell alert and an offense. It now reads the request URL only: a
+  `cmd`/`exec`/`shell` parameter, a shell or downloader in the URL, or a path
+  segment named after c99/r57.
+
 ## [0.2.6] - 2026-10-27
 
 ### Fixed
