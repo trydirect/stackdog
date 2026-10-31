@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash
-#   curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.8
+#   curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.2.9
 #
 # Installs the stackdog binary to /usr/local/bin.
 # Requires: curl, tar, sha256sum (or shasum), Linux x86_64 or aarch64.
@@ -73,7 +73,7 @@ resolve_version() {
   fi
 
   if [ -z "$TAG" ]; then
-    error "Could not determine latest release. Create a GitHub release, or specify one with --version (e.g. --version v0.2.8)."
+    error "Could not determine latest release. Create a GitHub release, or specify one with --version (e.g. --version v0.2.9)."
   fi
 
   VERSION="$(echo "$TAG" | sed 's/^v//')"
@@ -136,7 +136,7 @@ main() {
         echo "Install stackdog binary to ${INSTALL_DIR}."
         echo ""
         echo "Options:"
-        echo "  --version VERSION   Install a specific version (e.g. v0.2.8)"
+        echo "  --version VERSION   Install a specific version (e.g. v0.2.9)"
         echo "  --help              Show this help"
         exit 0
         ;;

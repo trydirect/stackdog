@@ -70,6 +70,11 @@ const php2shellRows = [
     'php.worker-crash',
     'Three or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass. One or two per pass never alert, so a single flaky extension stays quiet.',
     'Alert. Repeated crashes are what attempts against PHP memory bugs leave behind.'
+  ],
+  [
+    'web.php2shell-attempt',
+    'A request that runs PHP out of memory before any script runs (Apache "in Unknown on line 0", or nginx "upstream sent unexpected FastCGI record" on a POST to php-fpm), or the public scanner user agent',
+    'Alert and an offense per line. A client causing five within the ban window is banned in the same pass.'
   ]
 ] as const;
 
@@ -373,16 +378,22 @@ export default function PhpShellDetectionPage() {
             file scan or log rule can fix it: the fix is upgrading PHP. Stackdog reads the PHP version
             on the host and in every running container, from the package database and from the{' '}
             <code>PHP_VERSION</code> variable of official images, and tells you which ones are behind.
-            It also watches for PHP workers that keep crashing. Neither finding names an attacker, so
-            neither bans, and Stackdog does not detect the exploit request itself.
+            It watches for PHP workers that keep crashing, and it bans clients whose requests run PHP
+            out of memory before any script runs, the step every known PHP2Shell variant relies on.
+            The exploit can succeed in a few requests, so the ban mostly stops repeat attempts and
+            scanners; upgrading stays the fix. Rare innocent causes exist (a giant form on a PHP with a
+            tiny memory_limit, a buggy extension crashing php-fpm on an upload), which is why a ban
+            takes five within five minutes from one address.
           </p>
           <div className="mt-10">
             <DataTable headers={['Finding', 'When', 'Action']} rows={php2shellRows} />
           </div>
           <p className="mt-6 text-sm leading-7 text-slate-400">
             Covered: Debian and Ubuntu (<code>php8.x-common</code>), Alpine (<code>php8x-common</code>) and
-            official <code>php</code> images. RPM-based hosts are not read yet. A shell an attacker
-            drops after getting in is still caught by the file scan above.
+            official <code>php</code> images. RPM-based hosts are not read yet. Attempts are read from
+            web server error logs: container logs on their own, host logs once listed in{' '}
+            <code>STACKDOG_LOG_SOURCES</code>. A shell an attacker drops after getting in is still
+            caught by the file scan above.
           </p>
         </div>
       </section>

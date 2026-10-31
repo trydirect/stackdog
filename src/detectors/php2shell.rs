@@ -10,12 +10,28 @@
 //! - whether PHP workers keep crashing, which is what memory-corruption
 //!   attempts tend to leave behind (`php.worker-crash`).
 //!
-//! Neither names a client address, so neither ever bans.
+//! Neither names a client address, so neither ever bans. A third,
+//! `web.php2shell-attempt`, reads the error-log lines the exploit's
+//! out-of-memory step leaves behind with a client address, and bans:
+//!
+//! - Apache mod_php: `[client 203.0.113.9:51234] PHP Fatal error:  Allowed
+//!   memory size of ... exhausted ... in Unknown on line 0`. "Unknown on line
+//!   0" means PHP ran out of memory while parsing the request, before any
+//!   script ran; application out-of-memory errors name a file and line;
+//! - nginx in front of php-fpm: the worker exits after that fatal error and
+//!   nginx logs `upstream sent unexpected FastCGI record ... client: ...,
+//!   request: "POST ..."`;
+//! - the User-Agent of the public scanner, `php2shell-...`.
+//!
+//! Formats were reproduced against php:8.3-apache and php:8.3-fpm behind
+//! nginx with a benign oversized form POST, not taken from exploit traffic.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
+
+use regex::Regex;
 
 use crate::detectors::audits::{parse_apk_installed, parse_dpkg_status};
 use crate::detectors::php_shell::{under_host_root, ContainerFilesystem};
@@ -25,6 +41,11 @@ use crate::sniff::reader::LogEntry;
 
 pub const VERSION_DETECTOR_ID: &str = "vuln.php2shell";
 pub const CRASH_DETECTOR_ID: &str = "php.worker-crash";
+pub const ATTEMPT_DETECTOR_ID: &str = "web.php2shell-attempt";
+
+/// Findings per pass. Each one is an offense, so a client that causes five
+/// startup out-of-memory errors is banned in the pass that reads them.
+const MAX_ATTEMPT_FINDINGS: usize = 50;
 
 const CVES: &str = "CVE-2026-109618, CVE-2026-109619";
 
@@ -283,6 +304,10 @@ pub fn findings(installs: &[PhpInstall]) -> Vec<DetectorFinding> {
                 60,
             ),
         };
+        let description = format!(
+            "{}. Until then, session.upload_progress.enabled = 0 closes the confirmed php-fpm path",
+            description
+        );
 
         findings.push(DetectorFinding {
             detector_id: VERSION_DETECTOR_ID.into(),
@@ -336,6 +361,111 @@ impl LogDetector for PhpWorkerCrashDetector {
             sample_line: crashes[0].line.clone(),
         }]
     }
+}
+
+/// Requests that run PHP out of memory before any script runs, and the known
+/// scanner, with the client address the error or access log records.
+pub struct Php2ShellAttemptDetector;
+
+impl LogDetector for Php2ShellAttemptDetector {
+    fn id(&self) -> &'static str {
+        ATTEMPT_DETECTOR_ID
+    }
+
+    fn family(&self) -> DetectorFamily {
+        DetectorFamily::Web
+    }
+
+    fn detect(&self, entries: &[LogEntry]) -> Vec<DetectorFinding> {
+        // Identical lines are separate requests: an exploit burst over one
+        // keep-alive connection logs the same nginx line within one second.
+        // The registry drops findings with identical samples, so repeats are
+        // numbered to count as the offenses they are.
+        let mut seen: HashMap<String, usize> = HashMap::new();
+
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let reason = attempt_reason(&entry.line)?;
+                let sample = client_only(&entry.line);
+                let count = seen.entry(sample.clone()).or_insert(0);
+                *count += 1;
+                let sample_line = if *count > 1 {
+                    format!("{} (repeat {})", sample, count)
+                } else {
+                    sample
+                };
+                Some(DetectorFinding {
+                    detector_id: ATTEMPT_DETECTOR_ID.into(),
+                    family: DetectorFamily::Web,
+                    description: format!("PHP2Shell attempt ({}): {}", CVES, reason),
+                    severity: AnomalySeverity::Critical,
+                    confidence: 90,
+                    sample_line,
+                })
+            })
+            .take(MAX_ATTEMPT_FINDINGS)
+            .collect()
+    }
+}
+
+fn attempt_reason(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+
+    if lower.contains("allowed memory size of")
+        && lower.contains("in unknown on line 0")
+        && lower.contains("[client ")
+    {
+        return Some("PHP ran out of memory parsing the request, before any script ran");
+    }
+    if lower.contains("upstream sent unexpected fastcgi record")
+        && lower.contains("request: \"post ")
+    {
+        return Some("php-fpm worker died on a POST before answering");
+    }
+    if access_log_user_agent(&lower).is_some_and(|agent| agent.starts_with("php2shell")) {
+        return Some("public PHP2Shell scanner user agent");
+    }
+    None
+}
+
+/// The sample a ban reads its target from. Every address in it gets an
+/// offense, and an nginx error line also carries `server:` and `host:`, which
+/// are this server's own address when a scanner hits the bare IP. Keep the
+/// timestamp, the client and the request.
+fn client_only(line: &str) -> String {
+    let field = |name: &str, end: char| {
+        line.find(name).map(|start| {
+            let value = &line[start + name.len()..];
+            value[..value.find(end).unwrap_or(value.len())].to_string()
+        })
+    };
+    match (field("client: ", ','), field("request: \"", '"')) {
+        (Some(client), Some(request)) => {
+            let timestamp = line.split(" [").next().unwrap_or_default();
+            format!(
+                "{} upstream sent unexpected FastCGI record, client: {}, request: \"{}\"",
+                timestamp, client, request
+            )
+        }
+        _ => line.to_string(),
+    }
+}
+
+/// The User-Agent of a combined-format access log line:
+/// `"POST / HTTP/1.1" 500 5 "-" "agent"`. Only that shape: the last quoted
+/// text of any other line can be a file name or a message, and this rule bans.
+fn access_log_user_agent(line: &str) -> Option<&str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r#""(?:get|post|put|patch|delete|head|options) [^"]* http/[0-9.]+" \d{3} (?:\d+|-) "[^"]*" "([^"]*)""#,
+        )
+        .expect("valid regex")
+    });
+    re.captures(line)
+        .and_then(|captures| captures.get(1))
+        .map(|agent| agent.as_str())
 }
 
 /// php-fpm: `[pool www] child 123 exited on signal 11 (SIGSEGV) after ...`
@@ -508,6 +638,78 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:#?}");
         assert!(found[0].description.contains("PHP 8.3.13-r0 on host"));
         assert!(found[0].description.contains("8.3.36"));
+    }
+
+    // Lines captured from the lab: php:8.3-apache, and nginx:alpine in front
+    // of php:8.3-fpm, memory_limit = 4M, one benign 24 MB form POST.
+    const APACHE_STARTUP_OOM: &str = "[Sat Oct 31 16:40:23.085328 2026] [php:error] [pid 18:tid 18] [client 203.0.113.9:55324] PHP Fatal error:  Allowed memory size of 4194304 bytes exhausted (tried to allocate 2097152 bytes) in Unknown on line 0";
+    const APACHE_APP_OOM: &str = "[Sat Oct 31 16:40:23.305094 2026] [php:error] [pid 20:tid 20] [client 198.51.100.7:55342] PHP Fatal error:  Allowed memory size of 4194304 bytes exhausted (tried to allocate 67112960 bytes) in /var/www/html/oom.php on line 1";
+    const NGINX_FPM_STARTUP_OOM: &str = r#"2026/10/31 16:40:22 [error] 22#22: *3 upstream sent unexpected FastCGI record: 3 while reading response header from upstream, client: 203.0.113.9, server: , request: "POST /index.php HTTP/1.1", upstream: "fastcgi://172.19.0.3:9000", host: "127.0.0.1:18080""#;
+    const FPM_LOG_STARTUP_OOM: &str = "NOTICE: PHP message: PHP Fatal error:  Allowed memory size of 4194304 bytes exhausted (tried to allocate 2097152 bytes) in Unknown on line 0";
+
+    #[test]
+    fn test_attempts_are_read_from_lab_log_lines() {
+        let found = Php2ShellAttemptDetector.detect(&crash_entries(&[
+            APACHE_STARTUP_OOM,
+            NGINX_FPM_STARTUP_OOM,
+            r#"203.0.113.10 - - [31/Oct/2026:16:40:22 +0000] "POST / HTTP/1.1" 500 5 "-" "php2shell-109618""#,
+        ]));
+        assert_eq!(found.len(), 3);
+        assert!(found
+            .iter()
+            .all(|finding| finding.detector_id == ATTEMPT_DETECTOR_ID));
+        // The nginx line names this server too (`host: "127.0.0.1:18080"`);
+        // only the client may reach the ban.
+        for finding in &found[..2] {
+            assert_eq!(
+                crate::ip_ban::engine::IpBanEngine::extract_ip_candidates(&finding.sample_line),
+                vec!["203.0.113.9".to_string()],
+                "{}",
+                finding.sample_line
+            );
+        }
+    }
+
+    #[test]
+    fn test_ordinary_failures_are_not_attempts() {
+        let found = Php2ShellAttemptDetector.detect(&crash_entries(&[
+            // A script running out of memory hits real users too.
+            APACHE_APP_OOM,
+            // php-fpm's own log has no client address.
+            FPM_LOG_STARTUP_OOM,
+            r#"2026/10/31 16:40:22 [error] 22#22: *3 upstream sent unexpected FastCGI record: 3 while reading response header from upstream, client: 198.51.100.7, server: , request: "GET /index.php HTTP/1.1""#,
+            r#"198.51.100.7 - - [31/Oct/2026:16:40:22 +0000] "GET /blog/php2shell-explained HTTP/1.1" 200 5 "-" "Mozilla/5.0""#,
+        ]));
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn test_scanner_agent_only_from_an_access_log_line() {
+        let found = Php2ShellAttemptDetector.detect(&crash_entries(&[
+            r#"2026-10-31 10:00:00 upload rejected: filename "php2shell-report.pdf" too large (client 198.51.100.7)"#,
+            r#"198.51.100.7 - - [31/Oct/2026:16:40:22 +0000] "GET /docs/php2shell HTTP/1.1" 200 5 "-" "Mozilla/5.0""#,
+        ]));
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn test_identical_lines_each_count_through_the_registry() {
+        // Same second, same connection, same request: what a burst over one
+        // keep-alive connection logs. The registry must keep all five.
+        let lines = vec![NGINX_FPM_STARTUP_OOM; 5];
+        let anomalies = crate::detectors::DetectorRegistry::default()
+            .detect_log_anomalies(&crash_entries(&lines));
+        let attempts: Vec<_> = anomalies
+            .iter()
+            .filter(|anomaly| anomaly.detector_id.as_deref() == Some(ATTEMPT_DETECTOR_ID))
+            .collect();
+        assert_eq!(attempts.len(), 5);
+        for attempt in attempts {
+            assert_eq!(
+                crate::ip_ban::engine::IpBanEngine::extract_ip_candidates(&attempt.sample_line),
+                vec!["203.0.113.9".to_string()]
+            );
+        }
     }
 
     fn crash_entries(lines: &[&str]) -> Vec<LogEntry> {

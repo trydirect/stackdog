@@ -637,6 +637,7 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
                 | "web.sqli-probe"
                 | "web.webshell-probe"
                 | "web.php-shell-access"
+                | "web.php2shell-attempt"
                 | "file.sensitive-access"
                 | "cloud.metadata-ssrf"
         ) {
@@ -1630,6 +1631,58 @@ mod tests {
             .detect_log_anomalies(&entries)
             .iter()
             .all(|anomaly| anomaly.detector_id.as_deref() != Some("web.php-shell-access")));
+    }
+
+    #[actix_rt::test]
+    async fn test_php2shell_attempts_count_one_offense_per_line() {
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                // High enough that the test records offenses without blocking.
+                max_retries: 100,
+                find_time_secs: 300,
+                ban_time_secs: 60,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
+                protect_local_ips: true,
+            },
+        );
+        let line = "[Sat Oct 31 16:40:23.085328 2026] [php:error] [pid 18:tid 18] [client 95.163.183.216:55324] PHP Fatal error:  Allowed memory size of 4194304 bytes exhausted (tried to allocate 2097152 bytes) in Unknown on line 0";
+        let entries: Vec<reader::LogEntry> = (0..5)
+            .map(|_| reader::LogEntry {
+                source_id: "apache".into(),
+                timestamp: Utc::now(),
+                line: line.into(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect();
+        let mut summary = make_summary("unused", AnomalySeverity::Critical);
+        // Through the registry, as production runs it: identical lines, as a
+        // burst within one timestamp tick logs them, must each count.
+        summary.anomalies = orchestrator
+            .detectors
+            .detect_log_anomalies(&entries)
+            .into_iter()
+            .filter(|anomaly| anomaly.detector_id.as_deref() == Some("web.php2shell-attempt"))
+            .collect();
+        assert_eq!(summary.anomalies.len(), 5);
+        assert!(summary.anomalies.iter().all(should_auto_ban));
+
+        orchestrator
+            .apply_ip_ban(&[], &test_log_source(), &summary, &engine)
+            .await
+            .unwrap();
+
+        // One row per address; five lines count five times.
+        let since = Utc::now() - chrono::Duration::minutes(5);
+        let offenses =
+            find_recent_offenses(&orchestrator.pool, "95.163.183.216", "sniff", since).unwrap();
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(offenses[0].offense_count, 5);
     }
 
     #[actix_rt::test]

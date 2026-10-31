@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-10-31
+
+### Added
+
+- `web.php2shell-attempt`: bans clients whose requests run PHP out of memory
+  before any script runs, the step every known PHP2Shell variant relies on.
+  Read from Apache error logs (`[client …] … Allowed memory size … in Unknown
+  on line 0`), nginx error logs in front of php-fpm (`upstream sent
+  unexpected FastCGI record … request: "POST …"`), and the public scanner's
+  `php2shell-…` User-Agent. Each line is one offense, so five in the ban
+  window ban the client in the same pass. Only the client and request are
+  kept from nginx lines: `server:` and `host:` can be this server's own
+  address.
+- The `vuln.php2shell` alert now names the interim workaround,
+  `session.upload_progress.enabled = 0`.
+
 ## [0.2.8] - 2026-10-31
 
 ### Added
