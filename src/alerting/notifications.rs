@@ -14,7 +14,7 @@ use crate::alerting::alert::{Alert, AlertSeverity};
 const DEFAULT_SLACK_USERNAME: &str = "Stackdog";
 
 /// Avatar used on Slack messages unless overridden
-const DEFAULT_SLACK_ICON_URL: &str = "https://stackdog.stacker.my/stackdog-mark.png";
+const DEFAULT_SLACK_ICON_URL: &str = "https://stackdog.app/stackdog-mark.png";
 
 /// Avatar used when the primary icon host is unreachable
 const FALLBACK_SLACK_ICON_URL: &str =
