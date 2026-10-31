@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-31
+
 ### Added
 
 - PHP shell detection. Each sniff pass scores the PHP files in host web roots

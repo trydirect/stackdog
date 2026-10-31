@@ -106,7 +106,7 @@ const faqEntries = [
   {
     question: 'Which release do I need?',
     answer:
-      'PHP shell detection ships in the first release after v0.2.6. The installer picks the latest release by default.'
+      'v0.2.7 or later. The installer picks the latest release by default.'
   }
 ];
 
