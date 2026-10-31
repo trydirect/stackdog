@@ -109,7 +109,7 @@ const faqEntries = [
   {
     question: 'Which release do I need?',
     answer:
-      'v0.2.7 or later. The installer picks the latest release by default.'
+      'v0.2.7 or later for PHP shell detection, v0.2.8 or later for the PHP2Shell version check. The installer picks the latest release by default.'
   }
 ];
 
