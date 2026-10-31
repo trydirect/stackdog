@@ -9,6 +9,8 @@ interface TechArticleInput {
   title: string;
   description: string;
   url: string;
+  about?: string[];
+  sections?: string[];
 }
 
 const SITE_URL = getSiteUrl();
@@ -70,7 +72,13 @@ export function buildHomeStructuredData(faqEntries: FaqEntry[]) {
   };
 }
 
-export function buildDocsStructuredData({ title, description, url }: TechArticleInput) {
+export function buildDocsStructuredData({
+  title,
+  description,
+  url,
+  about = ['Stackdog CLI', 'Container security', 'eBPF monitoring', 'Threat detection'],
+  sections = ['Getting Started', 'CLI Reference', 'REST API', 'Configuration']
+}: TechArticleInput) {
   return {
     '@context': 'https://schema.org',
     '@type': 'TechArticle',
@@ -85,8 +93,8 @@ export function buildDocsStructuredData({ title, description, url }: TechArticle
       '@type': 'Organization',
       name: 'try.direct'
     },
-    about: ['Stackdog CLI', 'Container security', 'eBPF monitoring', 'Threat detection'],
-    articleSection: ['Getting Started', 'CLI Reference', 'REST API', 'Configuration'],
+    about,
+    articleSection: sections,
     proficiencyLevel: 'Intermediate'
   };
 }
