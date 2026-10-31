@@ -30,7 +30,7 @@ use crate::sniff::analyzer::AnomalySeverity;
 use self::signatures::{SignatureSet, Weight};
 use super::{DetectorFamily, DetectorFinding};
 
-pub use self::access::PhpShellAccessDetector;
+pub use self::access::{PhpShellAccessDetector, ACCESS_DETECTOR_ID};
 
 pub const FILE_DETECTOR_ID: &str = "php.shell-file";
 

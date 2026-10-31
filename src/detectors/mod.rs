@@ -118,6 +118,10 @@ impl DetectorRegistry {
         self.detectors.push(Box::new(detector));
     }
 
+    pub fn remove_detector(&mut self, id: &str) {
+        self.detectors.retain(|detector| detector.id() != id);
+    }
+
     pub fn register_builtin_log_detectors(&mut self) {
         self.register(SqlInjectionProbeDetector);
         self.register(PathTraversalDetector);

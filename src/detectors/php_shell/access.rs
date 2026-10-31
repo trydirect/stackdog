@@ -5,11 +5,14 @@
 //! request is grounds for a ban only when it can come from nobody but the
 //! attacker:
 //!
-//! - any request to a flagged file in an upload directory — no visitor has a
-//!   reason to execute an upload;
+//! - any request to a flagged file in an upload directory, with the upload
+//!   directory in the URL — no visitor has a reason to execute an upload;
 //! - a request with parameters (query string or POST) to a flagged file that
 //!   is not a common entry point — that is someone driving the shell;
-//! - a POST to any PHP file in an upload directory, flagged or not yet.
+//! - a POST to any PHP file under an `uploads/` URL, flagged or not yet.
+//!
+//! The URL side of "upload directory" is only `uploads/`: `/images/`,
+//! `/files/` and `/tmp/` are ordinary URL trees with real PHP endpoints.
 //!
 //! Other requests to flagged files raise an alert-only finding.
 
@@ -21,7 +24,7 @@ use crate::ip_ban::engine::IpBanEngine;
 use crate::sniff::analyzer::AnomalySeverity;
 use crate::sniff::reader::LogEntry;
 
-use super::{in_upload_dir, FlaggedFile, FlaggedFiles, PHP_EXTENSIONS};
+use super::{FlaggedFile, FlaggedFiles, PHP_EXTENSIONS};
 
 pub const ACCESS_DETECTOR_ID: &str = "web.php-shell-access";
 /// Alert-only: a flagged file was requested in a way visitors also do.
@@ -30,6 +33,10 @@ pub const REQUEST_DETECTOR_ID: &str = "php.shell-request";
 /// One finding per client per pass is enough to count an offense; more only
 /// floods the alert channel.
 const MAX_FINDINGS: usize = 20;
+
+/// URL segments that mark an upload directory. Narrower than the scanner's
+/// list, because a ban rests on it.
+const URL_UPLOAD_DIR_SEGMENTS: &[&str] = &["uploads"];
 
 /// Files every visitor of a PHP site requests, with parameters.
 const COMMON_ENTRY_POINTS: &[&str] = &[
@@ -131,16 +138,20 @@ impl LogDetector for PhpShellAccessDetector {
 }
 
 fn judge(request: &HttpRequest, flagged: &[FlaggedFile]) -> Option<Verdict> {
-    let file_name = request.path.rsplit('/').next().unwrap_or_default();
+    let path = script_path(&request.path);
+    let file_name = path.rsplit('/').next().unwrap_or_default();
     if file_name.is_empty() {
         return None;
     }
+    let url_in_uploads = in_url_upload_dir(&path);
 
     if let Some(file) = flagged
         .iter()
-        .find(|file| same_file(&file.logical_path, &request.path))
+        .find(|file| same_file(&file.logical_path, &path))
     {
-        if file.in_upload_dir {
+        // The URL must carry the upload directory itself: a suffix match of
+        // `/index.php` against `.../uploads/index.php` is the front page.
+        if file.in_upload_dir && url_in_uploads {
             return Some(Verdict::Ban("flagged file in an upload directory"));
         }
         if request.has_parameters() && !COMMON_ENTRY_POINTS.contains(&file_name) {
@@ -149,16 +160,50 @@ fn judge(request: &HttpRequest, flagged: &[FlaggedFile]) -> Option<Verdict> {
         return Some(Verdict::Alert);
     }
 
-    if request.method == "POST" && is_php(file_name) && in_upload_dir(&request.path) {
+    if request.method == "POST" && is_php(file_name) && url_in_uploads {
         return Some(Verdict::Ban("POST to PHP in an upload directory"));
     }
 
     None
 }
 
+/// The script a request executes. Segments are normalised the way the web
+/// server resolves them (`//`, `.`, `..`), and anything after the first PHP
+/// segment is PATH_INFO: `/up/x.php/cmd` and `/up/x.php/` both run `x.php`.
+fn script_path(request_path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in request_path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => {
+                segments.push(segment);
+                if is_php(segment) {
+                    break;
+                }
+            }
+        }
+    }
+    format!("/{}", segments.join("/"))
+}
+
+fn in_url_upload_dir(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower
+        .split('/')
+        .rev()
+        .skip(1) // the file name itself
+        .any(|segment| URL_UPLOAD_DIR_SEGMENTS.contains(&segment))
+}
+
 /// The file at `logical_path` (`/var/www/html/up/x.php`) is what a request
 /// for `request_path` (`/up/x.php`) executes. The docroot is not known, so
-/// the URL must be a suffix of the file path on a segment boundary.
+/// the URL must be a suffix of the file path on a segment boundary. A suffix
+/// that leaves an upload directory out (`/x.php` against
+/// `.../uploads/2026/x.php`) names some other file: a docroot does not sit
+/// inside `uploads/`.
 fn same_file(logical_path: &str, request_path: &str) -> bool {
     let request_path = request_path.trim_end_matches('/');
     if request_path.is_empty() {
@@ -169,13 +214,19 @@ fn same_file(logical_path: &str, request_path: &str) -> bool {
     } else {
         format!("/{}", request_path)
     };
-    logical_path == request_path || logical_path.ends_with(&request_path)
+    let Some(docroot) = logical_path.strip_suffix(request_path.as_str()) else {
+        return false;
+    };
+    !docroot
+        .to_ascii_lowercase()
+        .split('/')
+        .any(|segment| URL_UPLOAD_DIR_SEGMENTS.contains(&segment))
 }
 
 fn is_php(file_name: &str) -> bool {
     file_name
         .rsplit_once('.')
-        .map(|(_, ext)| PHP_EXTENSIONS.contains(&ext))
+        .map(|(_, ext)| PHP_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
 }
 
@@ -277,10 +328,73 @@ mod tests {
     }
 
     #[test]
+    fn test_flagged_upload_does_not_ban_a_same_named_docroot_file() {
+        let detector = detector(&[
+            ("/var/www/html/wp-content/uploads/index.php", true),
+            ("/var/www/html/wp-content/uploads/2026/x.php", true),
+        ]);
+        for target in ["/index.php", "/x.php", "/x.php?a=1", "/index.php?p=42"] {
+            let found = detector.detect(&entries(&[&line("198.51.100.7", "GET", target)]));
+            assert!(found.is_empty(), "{target} is another file");
+        }
+        let found = detector.detect(&entries(&[&line(
+            "203.0.113.9",
+            "GET",
+            "/wp-content/uploads/index.php",
+        )]));
+        assert_eq!(found[0].detector_id, ACCESS_DETECTOR_ID);
+    }
+
+    #[test]
+    fn test_post_to_php_under_ordinary_url_trees_does_not_ban() {
+        let detector = detector(&[]);
+        for target in [
+            "/images/thumb.php",
+            "/files/download.php",
+            "/tmp/x.php",
+            "/upload/index.php",
+        ] {
+            assert!(
+                detector
+                    .detect(&entries(&[&line("198.51.100.7", "POST", target)]))
+                    .is_empty(),
+                "{target} must not ban"
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_info_and_trailing_slash_reach_the_script() {
+        let detector = detector(&[("/var/www/html/uploads/x.php", true)]);
+        for (method, target) in [
+            ("GET", "/uploads/x.php/"),
+            ("POST", "/uploads/x.php/cmd"),
+            ("GET", "/uploads//./x.php"),
+            ("GET", "/static/../uploads/x.php"),
+        ] {
+            let found = detector.detect(&entries(&[&line("203.0.113.9", method, target)]));
+            assert_eq!(found.len(), 1, "{method} {target}");
+            assert_eq!(
+                found[0].detector_id, ACCESS_DETECTOR_ID,
+                "{method} {target}"
+            );
+        }
+
+        let found = self::detector(&[]).detect(&entries(&[&line(
+            "203.0.113.9",
+            "POST",
+            "/uploads/y.PHP/z",
+        )]));
+        assert_eq!(found[0].detector_id, ACCESS_DETECTOR_ID);
+    }
+
+    #[test]
     fn test_suffix_match_respects_segments() {
         assert!(same_file("/var/www/html/up/x.php", "/up/x.php"));
         assert!(!same_file("/var/www/html/backup/x.php", "/up/x.php"));
         assert!(!same_file("/var/www/html/up/x.php", "/"));
+        assert!(same_file("/var/www/html/uploads/x.php", "/uploads/x.php"));
+        assert!(!same_file("/var/www/html/uploads/x.php", "/x.php"));
     }
 
     #[test]

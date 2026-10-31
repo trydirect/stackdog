@@ -76,16 +76,21 @@ impl SniffOrchestrator {
             .enabled
             .then(|| IpBanEngine::new(pool.clone(), ip_ban_config));
 
-        let tool_registry = ToolRegistry::new(
-            pool.clone(),
-            IpBanConfig::from_env(),
-            DetectorRegistry::default(),
-        );
+        let detector_registry = || {
+            let mut registry = DetectorRegistry::default();
+            if !config.phpshell_enabled {
+                registry.remove_detector(php_shell::ACCESS_DETECTOR_ID);
+            }
+            registry
+        };
+        let tool_registry =
+            ToolRegistry::new(pool.clone(), IpBanConfig::from_env(), detector_registry());
+        let detectors = detector_registry();
 
         Ok(Self {
             config,
             pool,
-            detectors: DetectorRegistry::default(),
+            detectors,
             reporter,
             ip_ban,
             tool_registry,
@@ -621,6 +626,12 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
                 | "cloud.metadata-ssrf"
         ) {
             return true;
+        }
+        // Alert-only by policy. Their descriptions carry file and URL paths,
+        // and a shell named `webshell.php` would otherwise pass the phrase
+        // check below.
+        if matches!(detector_id, "php.shell-file" | "php.shell-request") {
+            return false;
         }
     }
 
@@ -1562,6 +1573,40 @@ mod tests {
         assert_eq!(visit.len(), 1);
         assert_eq!(visit[0].detector_id.as_deref(), Some("php.shell-request"));
         assert!(!should_auto_ban(&visit[0]));
+    }
+
+    #[test]
+    fn test_php_alert_only_findings_never_ban_whatever_the_wording() {
+        for detector_id in ["php.shell-file", "php.shell-request"] {
+            let anomaly = LogAnomaly {
+                description: "Request to a file flagged as a PHP shell: GET /webshell.php".into(),
+                severity: AnomalySeverity::High,
+                sample_line: r#"203.0.113.9 - - [31/Oct/2026:10:00:00 +0000] "GET /webshell.php HTTP/1.1" 200 5 "-" "x""#.into(),
+                detector_id: Some(detector_id.into()),
+                detector_family: None,
+                confidence: Some(70),
+                suggested_action: None,
+            };
+            assert!(!should_auto_ban(&anomaly), "{detector_id}");
+        }
+    }
+
+    #[test]
+    fn test_phpshell_disabled_removes_the_access_detector() {
+        let mut config = memory_sniff_config();
+        config.phpshell_enabled = false;
+        let orchestrator = SniffOrchestrator::new(config).unwrap();
+        let entries = vec![reader::LogEntry {
+            source_id: "nginx".into(),
+            timestamp: Utc::now(),
+            line: r#"203.0.113.9 - - [31/Oct/2026:10:00:00 +0000] "POST /uploads/a.php HTTP/1.1" 200 5 "-" "x""#.into(),
+            metadata: std::collections::HashMap::new(),
+        }];
+        assert!(orchestrator
+            .detectors
+            .detect_log_anomalies(&entries)
+            .iter()
+            .all(|anomaly| anomaly.detector_id.as_deref() != Some("web.php-shell-access")));
     }
 
     #[actix_rt::test]

@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP shell detection. Each sniff pass scores the PHP files in host web roots
   (`STACKDOG_PHPSHELL_PATHS`) and in the docroots of PHP containers for webshell
   code, and alerts on new or changed files that score as one (`php.shell-file`).
-  Requests that drive a shell — any request to a flagged file in an upload
-  directory, parameters sent to a flagged file, a POST to PHP in an upload
-  directory — are banned like other detector findings (`web.php-shell-access`).
+  Requests that drive a shell — any request to a flagged upload through an
+  `uploads/` URL, parameters sent to a flagged file that is not a common entry
+  point, a POST to PHP under an `uploads/` URL (PATH_INFO and `//`, `.`, `..`
+  resolved) — are banned like other detector findings (`web.php-shell-access`).
   A plain visit to an infected page is an alert only (`php.shell-request`).
   Running in Docker, mount the host read-only and set `STACKDOG_HOST_ROOT`.
   Extra signatures load from JSON (`STACKDOG_PHPSHELL_SIGNATURES`).

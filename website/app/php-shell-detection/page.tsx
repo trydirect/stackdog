@@ -19,7 +19,7 @@ const layers = [
     name: 'Access-log correlation',
     status: 'Available',
     description:
-      'Requests to flagged files, and POSTs to PHP in upload directories, are picked out of nginx, Apache and application access logs — with the client address that sent them.',
+      'Requests to flagged files, and POSTs to PHP under uploads/ URLs, are picked out of nginx, Apache and application access logs — with the client address that sent them.',
     icon: ScrollText
   },
   {
@@ -50,18 +50,18 @@ const responseRows = [
   ['php.shell-file', 'A new or changed file scores 3 or more', 'Alert. High, or Critical at 5+.'],
   [
     'web.php-shell-access',
-    'Any request to a flagged file in an upload directory; a request with parameters to any other flagged file; a POST to PHP in an upload directory',
+    'Any request to a flagged upload whose URL goes through uploads/; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an uploads/ URL',
     'Alert and an offense against the client IP. The IP is banned once it reaches the ban threshold.'
   ],
   [
     'php.shell-request',
-    'Outside upload directories: a plain visit to a flagged page, or any request to a flagged common entry point such as index.php or wp-login.php',
-    'Alert only. Banning visitors of an infected page would ban its audience.'
+    'A plain visit to a flagged page, or any request to a flagged common entry point such as index.php or wp-login.php. /images/, /files/ and /tmp/ URLs count as ordinary pages.',
+    'Alert only, never a ban. Banning visitors of an infected page would ban its audience.'
   ]
 ] as const;
 
 const envRows = [
-  ['STACKDOG_PHPSHELL_ENABLED', 'true', 'Turn PHP shell detection on or off.'],
+  ['STACKDOG_PHPSHELL_ENABLED', 'true', 'Turn PHP shell detection on or off: both the file scan and the access-log detector.'],
   ['STACKDOG_PHPSHELL_PATHS', '/var/www', 'Host web roots to scan, comma-separated. Containers are found on their own.'],
   [
     'STACKDOG_PHPSHELL_CONTAINERS',
