@@ -25,6 +25,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8
     },
     {
+      url: `${siteUrl}/php-shell-quickstart`,
+      lastModified,
+      changeFrequency: 'monthly',
+      priority: 0.8
+    },
+    {
       url: `${siteUrl}/contact`,
       lastModified,
       changeFrequency: 'monthly',

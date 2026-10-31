@@ -267,13 +267,13 @@ export default function PhpShellDetectionPage() {
               the addresses that use them.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-4">
-              <a
-                href="#setup"
+              <Link
+                href="/php-shell-quickstart"
                 className="inline-flex items-center gap-2 rounded-full bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
               >
-                Set it up
+                Quick start
                 <ArrowRight className="h-4 w-4" />
-              </a>
+              </Link>
               <Link
                 href="/docs"
                 className="inline-flex items-center gap-2 rounded-full border border-slate-700 px-6 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-400/50 hover:text-white"
@@ -358,7 +358,9 @@ export default function PhpShellDetectionPage() {
             Host paths come from <code>STACKDOG_PHPSHELL_PATHS</code>. PHP containers are found on their
             own, by name or image, or by a volume mounted at a docroot. Mounted docroots are read at
             their host source and docroots baked into the image through the overlay filesystem. Running
-            in Docker, Stackdog reads both through a read-only mount of the host.
+            in Docker, Stackdog reads both through a read-only mount of the host. For a plain server,
+            the <Link href="/php-shell-quickstart" className="text-cyan-300 hover:text-cyan-200">quick start</Link>{' '}
+            has the install command, recommended settings and a systemd unit.
           </p>
           <div className="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-2">
             <CodeSample code={composeSnippet} label="Docker Compose" />

@@ -77,6 +77,11 @@ export default function Footer(_: FooterProps) {
                 </Link>
               </li>
               <li>
+                <Link href="/php-shell-quickstart" className="hover:text-cyan-300">
+                  PHP Shell Quick Start
+                </Link>
+              </li>
+              <li>
                 <Link href="/contact" className="hover:text-cyan-300">
                   Contact
                 </Link>
