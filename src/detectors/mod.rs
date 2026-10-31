@@ -8,6 +8,7 @@ pub mod audits;
 pub(crate) mod http_request;
 mod integrity;
 mod ml;
+pub mod php2shell;
 pub mod php_shell;
 
 use std::collections::HashSet;
@@ -21,7 +22,10 @@ use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInvento
 use self::http_request::{extract_request, HttpRequest};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
-use self::php_shell::{PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot};
+use self::php2shell::{PhpVersionMonitor, PhpWorkerCrashDetector};
+use self::php_shell::{
+    ContainerFilesystem, PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot,
+};
 use crate::database::connection::DbPool;
 use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly};
 use crate::sniff::reader::LogEntry;
@@ -98,6 +102,7 @@ pub struct DetectorRegistry {
     package_inventory_monitor: PackageInventoryMonitor,
     docker_posture_monitor: DockerPostureMonitor,
     php_shell_scanner: PhpShellScanner,
+    php_version_monitor: PhpVersionMonitor,
 }
 
 impl DetectorRegistry {
@@ -109,6 +114,7 @@ impl DetectorRegistry {
             package_inventory_monitor: PackageInventoryMonitor,
             docker_posture_monitor: DockerPostureMonitor,
             php_shell_scanner: PhpShellScanner::new(),
+            php_version_monitor: PhpVersionMonitor::new(),
         }
     }
 
@@ -139,6 +145,7 @@ impl DetectorRegistry {
         self.register(PhpShellAccessDetector::new(
             self.php_shell_scanner.flagged_files(),
         ));
+        self.register(PhpWorkerCrashDetector);
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {
@@ -185,6 +192,18 @@ impl DetectorRegistry {
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
             .collect())
+    }
+
+    pub fn detect_php_version_anomalies(
+        &self,
+        containers: &[ContainerFilesystem],
+        host_root: Option<&str>,
+    ) -> Vec<LogAnomaly> {
+        self.php_version_monitor
+            .detect(containers, host_root)
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
     }
 
     pub fn detect_config_assessment_anomalies(&self, paths: &[String]) -> Result<Vec<LogAnomaly>> {

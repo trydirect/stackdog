@@ -107,7 +107,8 @@ const envRows = [
   ['STACKDOG_HOST_ROOT', '/host', 'Host filesystem mount point when Stackdog runs in Docker (/:/host:ro).'],
   ['STACKDOG_PHPSHELL_SKIP_DIRS', 'vendor,node_modules,.git', 'Directory names the PHP shell scan never enters.'],
   ['STACKDOG_PHPSHELL_MAX_FILE_BYTES', '2097152', 'Bytes read per file by the PHP shell scan.'],
-  ['STACKDOG_PHPSHELL_SIGNATURES', '/etc/stackdog/php-shell-signatures.json', 'Extra PHP shell signatures in JSON.']
+  ['STACKDOG_PHPSHELL_SIGNATURES', '/etc/stackdog/php-shell-signatures.json', 'Extra PHP shell signatures in JSON.'],
+  ['STACKDOG_PHP_VERSION_CHECK_ENABLED', 'true', 'Alert on PHP builds older than the PHP2Shell fixes, on the host and in containers.']
 ] as const;
 
 export const metadata: Metadata = {

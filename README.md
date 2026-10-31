@@ -614,6 +614,28 @@ a JSON file:
   "pattern": "acme_shell_v\\d", "weight": "strong"}]
 ```
 
+#### PHP2Shell exposure (CVE-2026-109618, CVE-2026-109619)
+
+PHP2Shell is unauthenticated remote code execution in the PHP interpreter. The
+fix is upgrading PHP; Stackdog tells you where you still have to.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.php2shell` | a PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older | Critical alert for upstream builds (official `php` images, read from `PHP_VERSION`); Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number |
+| `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1–2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
+
+The version check reads `php8.x-common` (Debian, Ubuntu) and `php8x-common` or `php8x` (Alpine)
+from the package database on the host and inside each running container, and
+`PHP_VERSION` from container environments. RPM-based hosts are not covered.
+Neither finding names a client, so neither bans. Turn the version check off
+with `STACKDOG_PHP_VERSION_CHECK_ENABLED=false`.
+
+Crash lines come from php-fpm and Apache error logs. Container logs are read
+on their own (official images send php-fpm errors to stderr); add host logs
+such as `/var/log/php8.3-fpm.log` to `STACKDOG_LOG_SOURCES`.
+
+Stackdog does not detect the exploit request itself and cannot patch PHP.
+
 ---
 
 ## 📦 Installation

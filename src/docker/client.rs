@@ -169,6 +169,11 @@ impl DockerClient {
             let merged_dir = inspect
                 .graph_driver
                 .and_then(|driver| driver.data.get("MergedDir").cloned());
+            let config = inspect.config.unwrap_or_default();
+            let php_version = config.env.unwrap_or_default().into_iter().find_map(|var| {
+                var.strip_prefix("PHP_VERSION=")
+                    .map(|version| version.trim().to_string())
+            });
 
             result.push(crate::detectors::php_shell::ContainerFilesystem {
                 name: inspect
@@ -176,13 +181,11 @@ impl DockerClient {
                     .unwrap_or_else(|| id.chars().take(12).collect())
                     .trim_start_matches('/')
                     .to_string(),
-                image: inspect
-                    .config
-                    .and_then(|config| config.image)
-                    .unwrap_or_default(),
+                image: config.image.unwrap_or_default(),
                 id,
                 mounts,
                 merged_dir,
+                php_version,
             });
         }
 
