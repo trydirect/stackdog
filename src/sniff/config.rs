@@ -3,6 +3,10 @@
 use std::env;
 use std::path::PathBuf;
 
+use crate::detectors::php_shell::{
+    PhpShellOptions, DEFAULT_CONTAINER_PATTERNS, DEFAULT_MAX_FILE_BYTES, DEFAULT_SKIP_DIRS,
+};
+
 /// Default AI request timeout. Generous because local models on modest
 /// hardware can take minutes per completion, but bounded so a wedged
 /// inference host cannot stall the sniff loop indefinitely.
@@ -89,6 +93,16 @@ pub struct SniffConfig {
     pub trusted_containers: Vec<String>,
     /// Enable AI tool-use (function calling) during analysis
     pub ai_tools_enabled: bool,
+    /// Scan web roots for PHP shells
+    pub phpshell_enabled: bool,
+    /// Host directories to scan for PHP shells
+    pub phpshell_paths: Vec<String>,
+    /// Container name/image fragments that mark a PHP workload
+    pub phpshell_container_patterns: Vec<String>,
+    /// Where the host filesystem is mounted when Stackdog runs in a container
+    pub host_root: Option<String>,
+    /// File size cap, skipped directories and extra signatures for the scanner
+    pub phpshell_options: PhpShellOptions,
 }
 
 /// Arguments for building a SniffConfig
@@ -280,8 +294,58 @@ impl SniffConfig {
                     _ => None,
                 })
                 .unwrap_or(true),
+            phpshell_enabled: env::var("STACKDOG_PHPSHELL_ENABLED")
+                .ok()
+                .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(true),
+            phpshell_paths: env_list("STACKDOG_PHPSHELL_PATHS").unwrap_or_default(),
+            phpshell_container_patterns: env_list("STACKDOG_PHPSHELL_CONTAINERS")
+                .map(|patterns| {
+                    patterns
+                        .into_iter()
+                        .map(|p| p.to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    DEFAULT_CONTAINER_PATTERNS
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect()
+                }),
+            host_root: env::var("STACKDOG_HOST_ROOT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            phpshell_options: PhpShellOptions {
+                max_file_bytes: env::var("STACKDOG_PHPSHELL_MAX_FILE_BYTES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_MAX_FILE_BYTES),
+                skip_dirs: env_list("STACKDOG_PHPSHELL_SKIP_DIRS")
+                    .unwrap_or_else(|| DEFAULT_SKIP_DIRS.iter().map(|d| d.to_string()).collect()),
+                signatures_path: env::var("STACKDOG_PHPSHELL_SIGNATURES")
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty()),
+            },
         }
     }
+}
+
+/// A comma-separated variable, `None` when unset so callers can tell "unset"
+/// (use the defaults) from "set to nothing".
+fn env_list(name: &str) -> Option<Vec<String>> {
+    env::var(name).ok().map(|value| {
+        value
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    })
 }
 
 #[cfg(test)]

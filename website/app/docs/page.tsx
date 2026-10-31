@@ -100,7 +100,14 @@ const envRows = [
   ['STACKDOG_IP_BAN_UNBAN_CHECK_INTERVAL_SECS', '60', 'How often expired bans are checked and released.'],
   ['STACKDOG_MAIL_GUARD_ENABLED', 'true', 'Watch web containers for outbound spam bursts and quarantine offenders.'],
   ['STACKDOG_MAIL_GUARD_TARGETS', 'wordpress,php,apache', 'Container name patterns the mail guard watches.'],
-  ['STACKDOG_MAIL_GUARD_ALLOWLIST', 'postfix,mailu', 'Container name patterns exempt from the mail guard.']
+  ['STACKDOG_MAIL_GUARD_ALLOWLIST', 'postfix,mailu', 'Container name patterns exempt from the mail guard.'],
+  ['STACKDOG_PHPSHELL_ENABLED', 'true', 'Scan web roots for PHP shells. See the PHP Shell Detection page.'],
+  ['STACKDOG_PHPSHELL_PATHS', '/var/www', 'Host web roots scanned for PHP shells. PHP containers are found on their own.'],
+  ['STACKDOG_PHPSHELL_CONTAINERS', 'php,wordpress,drupal,laravel', 'Name or image fragments that mark a PHP container.'],
+  ['STACKDOG_HOST_ROOT', '/host', 'Host filesystem mount point when Stackdog runs in Docker (/:/host:ro).'],
+  ['STACKDOG_PHPSHELL_SKIP_DIRS', 'vendor,node_modules,.git', 'Directory names the PHP shell scan never enters.'],
+  ['STACKDOG_PHPSHELL_MAX_FILE_BYTES', '2097152', 'Bytes read per file by the PHP shell scan.'],
+  ['STACKDOG_PHPSHELL_SIGNATURES', '/etc/stackdog/php-shell-signatures.json', 'Extra PHP shell signatures in JSON.']
 ] as const;
 
 export const metadata: Metadata = {

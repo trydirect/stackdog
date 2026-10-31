@@ -207,6 +207,22 @@ pub fn init_database(pool: &DbPool) -> Result<()> {
     );
 
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS php_shell_scans (
+            path TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            logical_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            modified_at INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            rules TEXT NOT NULL,
+            in_upload_dir INTEGER NOT NULL,
+            scanned_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS ip_offenses (
             id TEXT PRIMARY KEY,
             ip_address TEXT NOT NULL,

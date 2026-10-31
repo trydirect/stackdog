@@ -7,6 +7,7 @@ import {
   Boxes,
   Cpu,
   Network,
+  FileCode2,
   FileSearch,
   ShieldAlert,
   ShieldCheck,
@@ -66,6 +67,13 @@ const features = [
     description:
       'Track file integrity against SQLite baselines, audit SSH, sudoers, and Docker daemon settings, and flag privileged containers or exposed Docker sockets.',
     icon: FileSearch
+  },
+  {
+    name: 'PHP Webshell Detection',
+    description:
+      'Scan host and container web roots for PHP shells, correlate them with access logs, and ban the clients driving them.',
+    icon: FileCode2,
+    href: '/php-shell-detection'
   },
   {
     name: 'Multi-Channel Alerts',
@@ -141,6 +149,11 @@ const faqEntries = [
     question: 'How does Stackdog avoid alert fatigue?',
     answer:
       'Alerts are filtered by a minimum severity you set, and repeats of the same finding are suppressed for a configurable window (six hours by default). Standing misconfigurations are re-detected on every pass, so without this they would notify all day. Each alert also names the real source, such as the container or log file it came from.'
+  },
+  {
+    question: 'Can Stackdog detect PHP webshells?',
+    answer:
+      'Yes. Stackdog scans PHP files in host web roots and in the docroots of PHP containers, flags files that execute request input or hide what they execute, and alerts on them. Requests that drive a flagged shell are read from access logs and the client address is banned. Files are never deleted automatically.'
   },
   {
     question: 'Is Stackdog open source?',
@@ -290,6 +303,15 @@ export default function HomePage() {
                   </div>
                   <h3 className="mt-5 text-xl font-semibold text-white">{feature.name}</h3>
                   <p className="mt-3 text-sm leading-7 text-slate-400">{feature.description}</p>
+                  {'href' in feature && feature.href ? (
+                    <Link
+                      href={feature.href}
+                      className="mt-4 inline-flex items-center gap-1.5 text-sm font-semibold text-cyan-300 hover:text-cyan-200"
+                    >
+                      Learn more
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  ) : null}
                 </article>
               );
             })}
