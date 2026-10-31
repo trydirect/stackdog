@@ -19,6 +19,10 @@ services:
       STACKDOG_AI_API_KEY: <yourkeyhere>
       STACKDOG_SLACK_WEBHOOK_URL: <yourslackchannelwebhook?
       STACKDOG_LOG_SOURCES: /var/log/syslog,/var/log/auth.log,/var/log/nginx/access.log
+      # PHP shell detection reads web roots on the host through the /host mount
+      # below. Uncomment both to scan host paths and PHP container docroots.
+      # STACKDOG_HOST_ROOT: /host
+      # STACKDOG_PHPSHELL_PATHS: /var/www
     restart: unless-stopped
     volumes:
     - source: stackdog-data
@@ -27,6 +31,10 @@ services:
     - source: /var/run/docker.sock
       target: /var/run/docker.sock
       type: bind
+    # - source: /
+    #   target: /host
+    #   type: bind
+    #   read_only: true
     command: serve
   stackdog-ui:
     image: trydirect/stackdog-ui:latest

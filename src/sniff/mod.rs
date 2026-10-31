@@ -13,6 +13,7 @@ pub mod reporter;
 use crate::alerting::{notifications::NotificationConfig, AlertSeverity};
 use crate::database::connection::{create_pool, init_database, DbPool};
 use crate::database::repositories::log_sources as log_sources_repo;
+use crate::detectors::php_shell;
 use crate::detectors::DetectorRegistry;
 use crate::docker::DockerClient;
 use crate::ip_ban::{gate, IpBanConfig, IpBanEngine, OffenseInput};
@@ -181,8 +182,15 @@ impl SniffOrchestrator {
         )
         .await?;
 
+        let mut container_filesystems = Vec::new();
         match DockerClient::new().await {
             Ok(docker) => {
+                if self.config.phpshell_enabled {
+                    match docker.list_container_filesystems().await {
+                        Ok(filesystems) => container_filesystems = filesystems,
+                        Err(err) => log::debug!("Skipping container PHP shell roots: {}", err),
+                    }
+                }
                 let postures = docker.list_container_postures(true).await?;
                 // Update tool registry with all postures (before filtering)
                 self.tool_registry.set_postures(postures.clone());
@@ -200,6 +208,30 @@ impl SniffOrchestrator {
                 .await?;
             }
             Err(err) => log::debug!("Skipping Docker posture audit: {}", err),
+        }
+
+        // Before the logs: a shell found in this pass is matched against the
+        // access logs read in this same pass.
+        if self.config.phpshell_enabled {
+            let host_root = self.config.host_root.as_deref();
+            let mut roots = php_shell::host_roots(&self.config.phpshell_paths, host_root);
+            roots.extend(php_shell::container_roots(
+                &container_filesystems,
+                &self.config.phpshell_container_patterns,
+                host_root,
+            ));
+            self.report_detector_batch(
+                &mut result,
+                "php-shell",
+                roots.len(),
+                "PHP shell scan",
+                self.detectors.detect_php_shell_anomalies(
+                    &self.pool,
+                    &roots,
+                    &self.config.phpshell_options,
+                )?,
+            )
+            .await?;
         }
 
         // 1. Discover sources
@@ -584,6 +616,7 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
                 | "web.archive-probe"
                 | "web.sqli-probe"
                 | "web.webshell-probe"
+                | "web.php-shell-access"
                 | "file.sensitive-access"
                 | "cloud.metadata-ssrf"
         ) {
@@ -1479,6 +1512,98 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.reason.as_deref()),
             Some("Repeated failed ssh login")
+        );
+    }
+
+    fn php_shell_anomalies(lines: &[&str]) -> Vec<LogAnomaly> {
+        use crate::detectors::php_shell::{FlaggedFile, PhpShellAccessDetector};
+        use crate::detectors::LogDetector;
+
+        let detector =
+            PhpShellAccessDetector::new(std::sync::Arc::new(std::sync::RwLock::new(vec![
+                FlaggedFile {
+                    logical_path: "/var/www/html/wp-content/uploads/x.php".into(),
+                    in_upload_dir: true,
+                },
+                FlaggedFile {
+                    logical_path: "/var/www/html/index.php".into(),
+                    in_upload_dir: false,
+                },
+            ])));
+        let entries: Vec<reader::LogEntry> = lines
+            .iter()
+            .map(|line| reader::LogEntry {
+                source_id: "nginx".into(),
+                timestamp: Utc::now(),
+                line: (*line).into(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect();
+        detector
+            .detect(&entries)
+            .iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    #[test]
+    fn test_php_shell_access_bans_but_visits_to_infected_pages_do_not() {
+        let shell = php_shell_anomalies(&[
+            r#"95.163.183.216 - - [31/Oct/2026:10:00:00 +0000] "POST /wp-content/uploads/x.php HTTP/1.1" 200 5 "-" "x""#,
+        ]);
+        assert_eq!(shell.len(), 1);
+        assert!(should_auto_ban(&shell[0]));
+
+        // AI-finding phrases are on by default: the alert-only finding must
+        // not read as one either.
+        let visit = php_shell_anomalies(&[
+            r#"198.51.100.7 - - [31/Oct/2026:10:00:00 +0000] "GET /index.php?p=42 HTTP/1.1" 200 5 "-" "x""#,
+        ]);
+        assert_eq!(visit.len(), 1);
+        assert_eq!(visit[0].detector_id.as_deref(), Some("php.shell-request"));
+        assert!(!should_auto_ban(&visit[0]));
+    }
+
+    #[actix_rt::test]
+    async fn test_php_shell_access_records_offense_except_for_allowlisted() {
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                max_retries: 5,
+                find_time_secs: 300,
+                ban_time_secs: 60,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![("95.163.183.217".parse().unwrap(), 32)],
+                max_bans_per_minute: 0,
+                protect_local_ips: true,
+            },
+        );
+        let mut summary = make_summary("unused", AnomalySeverity::Critical);
+        summary.anomalies = php_shell_anomalies(&[
+            r#"95.163.183.216 - - [31/Oct/2026:10:00:00 +0000] "POST /wp-content/uploads/x.php HTTP/1.1" 200 5 "-" "x""#,
+            r#"95.163.183.217 - - [31/Oct/2026:10:00:01 +0000] "POST /wp-content/uploads/x.php HTTP/1.1" 200 5 "-" "x""#,
+        ]);
+        assert_eq!(summary.anomalies.len(), 2);
+
+        orchestrator
+            .apply_ip_ban(&[], &test_log_source(), &summary, &engine)
+            .await
+            .unwrap();
+
+        let since = Utc::now() - chrono::Duration::minutes(5);
+        assert_eq!(
+            find_recent_offenses(&orchestrator.pool, "95.163.183.216", "sniff", since)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            find_recent_offenses(&orchestrator.pool, "95.163.183.217", "sniff", since)
+                .unwrap()
+                .is_empty()
         );
     }
 

@@ -50,6 +50,7 @@ bollard = "0.16"
 # HTTP client (for LLM API)
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 sha2 = "0.10"
+regex = "1"
 
 # Compression
 zstd = "0.13"

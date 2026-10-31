@@ -132,6 +132,63 @@ impl DockerClient {
         })
     }
 
+    /// Mounts and root filesystem of each running container, for the PHP
+    /// shell scanner to find docroots on the host.
+    pub async fn list_container_filesystems(
+        &self,
+    ) -> Result<Vec<crate::detectors::php_shell::ContainerFilesystem>> {
+        let containers = self
+            .client
+            .list_containers(None::<ListContainersOptions<String>>)
+            .await
+            .context("Failed to list containers for PHP shell scan")?;
+
+        let mut result = Vec::new();
+        for container in containers {
+            let Some(id) = container.id else {
+                continue;
+            };
+            let inspect = match self
+                .client
+                .inspect_container(&id, None::<InspectContainerOptions>)
+                .await
+            {
+                Ok(inspect) => inspect,
+                Err(err) => {
+                    log::debug!("Skipping container {} in PHP shell scan: {}", id, err);
+                    continue;
+                }
+            };
+
+            let mounts = inspect
+                .mounts
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|mount| Some((mount.source?, mount.destination?)))
+                .collect();
+            let merged_dir = inspect
+                .graph_driver
+                .and_then(|driver| driver.data.get("MergedDir").cloned());
+
+            result.push(crate::detectors::php_shell::ContainerFilesystem {
+                name: inspect
+                    .name
+                    .unwrap_or_else(|| id.chars().take(12).collect())
+                    .trim_start_matches('/')
+                    .to_string(),
+                image: inspect
+                    .config
+                    .and_then(|config| config.image)
+                    .unwrap_or_default(),
+                id,
+                mounts,
+                merged_dir,
+            });
+        }
+
+        Ok(result)
+    }
+
     /// List container posture information for detector-backed audits
     pub async fn list_container_postures(
         &self,

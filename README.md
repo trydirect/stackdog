@@ -19,6 +19,7 @@
 
 - **📊 Real-time Monitoring** — eBPF-based syscall monitoring with minimal overhead (<5% CPU)
 - **🔍 Log Sniffing** — Discover, read, and AI-summarize logs from containers and system files
+- **🐘 PHP Shell Detection** — Finds webshells in host and container web roots and bans the clients driving them
 - **🧭 Detector Framework** — Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
 - **🤖 AI/ML Detection** — Candle-powered anomaly detection + OpenAI/Ollama log analysis
 - **🚨 Alert System** — Multi-channel notifications (Slack, email, webhook)
@@ -564,6 +565,53 @@ curl -X POST http://localhost:5000/api/logs/sources \
 
 # View AI summaries
 curl http://localhost:5000/api/logs/summaries?source_id=myapp
+```
+
+### 8. PHP Shell Detection
+
+Every sniff pass reads the PHP files in web roots and scores them for webshell
+code: request input reaching `eval`/`system`/`assert`, `eval` of decoded data,
+`preg_replace` with `/e`, request input called as a function, and markers of
+known families (c99, r57, WSO, b374k, p0wny, China Chopper). One keyword never
+flags a file — WordPress calls `base64_decode`, Composer calls `proc_open` — the
+score does. PHP in an upload directory, and PHP hidden in an image there, add to
+it.
+
+**Where it looks:**
+- host paths in `STACKDOG_PHPSHELL_PATHS`;
+- PHP containers, found on their own: by name or image
+  (`STACKDOG_PHPSHELL_CONTAINERS`), or by a mount at `/var/www`, `/srv`, `/app`
+  or `/usr/share/nginx/html`. Mounted docroots are read at their host source,
+  docroots baked into the image through the overlay `MergedDir`.
+
+Running in Docker, Stackdog reads both through a read-only mount of the host:
+
+```yaml
+environment:
+  STACKDOG_HOST_ROOT: /host
+  STACKDOG_PHPSHELL_PATHS: /var/www
+volumes:
+  - /:/host:ro
+```
+
+**What it does:**
+
+| Finding | When | Action |
+|---|---|---|
+| `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
+| `web.php-shell-access` | any request to a flagged file in an upload directory; a request with parameters to a flagged file; a POST to PHP in an upload directory | alert + IP ban |
+| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only — banning visitors of an infected page would ban its audience |
+
+Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
+protected local addresses and the per-minute ceiling all apply. Stackdog never
+deletes or moves the file; removing it is your call.
+
+Add signatures without a rebuild by pointing `STACKDOG_PHPSHELL_SIGNATURES` at
+a JSON file:
+
+```json
+[{"id": "acme-shell", "description": "ACME shell marker",
+  "pattern": "acme_shell_v\\d", "weight": "strong"}]
 ```
 
 ---

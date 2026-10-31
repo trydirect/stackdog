@@ -5,8 +5,10 @@
 //! anomalies that flow through the existing sniff/reporting pipeline.
 
 pub mod audits;
+pub(crate) mod http_request;
 mod integrity;
 mod ml;
+pub mod php_shell;
 
 use std::collections::HashSet;
 
@@ -18,6 +20,7 @@ pub use self::audits::ContainerPosture;
 use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInventoryMonitor};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
+use self::php_shell::{PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot};
 use crate::database::connection::DbPool;
 use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly};
 use crate::sniff::reader::LogEntry;
@@ -93,6 +96,7 @@ pub struct DetectorRegistry {
     config_assessment_monitor: ConfigAssessmentMonitor,
     package_inventory_monitor: PackageInventoryMonitor,
     docker_posture_monitor: DockerPostureMonitor,
+    php_shell_scanner: PhpShellScanner,
 }
 
 impl DetectorRegistry {
@@ -103,6 +107,7 @@ impl DetectorRegistry {
             config_assessment_monitor: ConfigAssessmentMonitor,
             package_inventory_monitor: PackageInventoryMonitor,
             docker_posture_monitor: DockerPostureMonitor,
+            php_shell_scanner: PhpShellScanner::new(),
         }
     }
 
@@ -126,6 +131,9 @@ impl DetectorRegistry {
         self.register(SecretLeakageDetector);
         self.register(WebArchiveProbeDetector);
         self.register(MlBehavioralDetector::new());
+        self.register(PhpShellAccessDetector::new(
+            self.php_shell_scanner.flagged_files(),
+        ));
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {
@@ -155,6 +163,20 @@ impl DetectorRegistry {
         Ok(self
             .integrity_monitor
             .detect(pool, paths)?
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect())
+    }
+
+    pub fn detect_php_shell_anomalies(
+        &self,
+        pool: &DbPool,
+        roots: &[ScanRoot],
+        options: &PhpShellOptions,
+    ) -> Result<Vec<LogAnomaly>> {
+        Ok(self
+            .php_shell_scanner
+            .detect(pool, roots, options)?
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
             .collect())
