@@ -82,6 +82,16 @@ export default function Footer(_: FooterProps) {
                 </Link>
               </li>
               <li>
+                <Link href="/php2shell-check" className="hover:text-cyan-300">
+                  PHP2Shell Version Check
+                </Link>
+              </li>
+              <li>
+                <Link href="/fail2ban-alternative" className="hover:text-cyan-300">
+                  Fail2ban Alternative
+                </Link>
+              </li>
+              <li>
                 <Link href="/contact" className="hover:text-cyan-300">
                   Contact
                 </Link>
