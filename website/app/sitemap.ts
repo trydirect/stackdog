@@ -31,6 +31,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8
     },
     {
+      url: `${siteUrl}/php2shell-check`,
+      lastModified,
+      changeFrequency: 'weekly',
+      priority: 0.9
+    },
+    {
+      url: `${siteUrl}/fail2ban-alternative`,
+      lastModified,
+      changeFrequency: 'weekly',
+      priority: 0.9
+    },
+    {
       url: `${siteUrl}/contact`,
       lastModified,
       changeFrequency: 'monthly',
