@@ -1,51 +1,100 @@
 .sidebar {
+  flex: 0 0 220px;
   width: 220px;
-  min-height: 100vh;
-  background: #1f2937;
-  color: #f9fafb;
-  padding: 20px 16px;
+  height: 100vh;
   position: sticky;
   top: 0;
+  align-self: flex-start;
+  overflow-y: auto;
+  background: #182536;
+  color: #f8fafc;
+  padding: 28px 16px;
 }
 
-.sidebar-brand {
+.sidebar .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 1.1rem;
+  gap: 12px;
+  margin: 0 8px 36px;
+  font-size: 1.25rem;
   font-weight: 700;
-  margin-bottom: 20px;
+  letter-spacing: -0.025em;
 }
 
-.sidebar-logo {
-  width: 39px;
-  height: 39px;
+.sidebar .sidebar-logo {
+  width: 36px;
+  height: 36px;
   object-fit: contain;
   flex-shrink: 0;
   /* The artwork is a black silhouette; the sidebar is dark, so draw it white. */
   filter: brightness(0) invert(1);
 }
 
-.sidebar-nav {
+.sidebar .sidebar-nav {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
-.sidebar-nav a {
-  color: #d1d5db;
-  text-decoration: none;
-  padding: 8px 10px;
+.sidebar .sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 12px;
   border-radius: 6px;
+  color: #becbdc;
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
-.sidebar-nav a:hover {
-  background: #374151;
+.sidebar .sidebar-nav svg {
+  flex-shrink: 0;
+}
+
+.sidebar .sidebar-nav a:hover {
+  background: #24364d;
   color: #fff;
 }
 
-@media (max-width: 992px) {
+.sidebar .sidebar-nav a[aria-current='location'] {
+  background: #2b4566;
+  color: #fff;
+}
+
+.sidebar .sidebar-nav a:focus-visible {
+  outline: 2px solid #a8caff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 991.98px) {
   .sidebar {
-    display: none;
+    position: static;
+    flex: none;
+    width: 100%;
+    height: auto;
+    padding: 16px 24px;
+  }
+
+  .sidebar .sidebar-brand {
+    margin: 0 0 16px;
+  }
+
+  .sidebar .sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .sidebar {
+    padding: 16px 12px;
+  }
+
+  .sidebar .sidebar-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
