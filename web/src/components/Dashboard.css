@@ -1,86 +1,81 @@
 .dashboard {
-  padding: 20px;
-  max-width: 1400px;
+  padding: 32px;
+  max-width: 1680px;
   margin: 0 auto;
+  color: #172b45;
 }
 
 .dashboard-loading,
 .dashboard-error {
   display: flex;
+  flex: 1;
   justify-content: center;
   align-items: center;
   min-height: 400px;
+  padding: 24px;
 }
 
-.dashboard-topbar {
+.dashboard .dashboard-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 0.75rem;
+  margin-bottom: 8px;
 }
 
-.dashboard-topbar-spacer {
-  flex: 1;
+.dashboard .dashboard-topbar h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
 }
 
-.dashboard-actions-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #374151;
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 1.25rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.dashboard-actions-btn:hover {
-  background: #f9fafb;
-}
-
-.dashboard-subtitle {
-  color: #7f8c8d;
-  font-size: 1rem;
-}
-
-.stat-card {
-  border: none;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s;
-}
-
-.stat-card:hover {
-  transform: translateY(-2px);
-}
-
-.stat-card .card-title {
+.dashboard .dashboard-subtitle {
+  margin: 0;
+  color: #526379;
   font-size: 0.875rem;
-  color: #7f8c8d;
-  margin-bottom: 0.5rem;
 }
 
-.stat-value {
-  font-size: 2.5rem;
-  font-weight: 700;
-  color: #2c3e50;
+.dashboard .stat-card {
+  height: 100%;
+  min-height: 196px;
+  border: 1px solid #dde3eb;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.dashboard .stat-card .card-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+.dashboard .stat-card .card-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #526379;
+  margin-bottom: 24px;
+}
+
+.dashboard .stat-card .stat-value {
+  font-size: clamp(2rem, 3vw, 2.5rem);
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  color: #172b45;
   margin: 0;
 }
 
-.last-updated {
-  text-align: center;
-  color: #7f8c8d;
-  font-size: 0.875rem;
-  margin-top: 20px;
+.dashboard .last-updated {
+  color: #526379;
+  font-size: 0.75rem;
+  margin: 0;
 }
 
-/* Responsive adjustments */
-@media (max-width: 768px) {
-  .dashboard {
-    padding: 10px;
-  }
+@media (max-width: 767.98px) {
 
-  .stat-value {
-    font-size: 2rem;
+  .dashboard .stat-card {
+    min-height: 140px;
   }
 }

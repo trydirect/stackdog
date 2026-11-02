@@ -76,12 +76,11 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <Container fluid className="dashboard">
+    <Container as="main" fluid className="dashboard">
       <Row className="mb-4">
         <Col>
           <div className="dashboard-topbar">
-            <div className="dashboard-topbar-spacer" />
-            <button className="dashboard-actions-btn" aria-label="Actions menu">...</button>
+            <h1>Overview</h1>
           </div>
           <p className="dashboard-subtitle">
             Real-time security monitoring for containers and Linux servers
@@ -90,7 +89,7 @@ const Dashboard: React.FC = () => {
       </Row>
 
       {/* Security Score Card */}
-      <Row id="overview" className="mb-4">
+      <Row id="overview" className="g-3 mb-4">
         <Col md={6} lg={3}>
           <SecurityScore score={securityStatus?.overallScore || 0} />
         </Col>
@@ -99,7 +98,7 @@ const Dashboard: React.FC = () => {
             <Card.Body>
               <Card.Title>Active Threats</Card.Title>
               <Card.Text className="stat-value">
-                {securityStatus?.activeThreats || 0}
+                {(securityStatus?.activeThreats || 0).toLocaleString()}
               </Card.Text>
             </Card.Body>
           </Card>
@@ -109,7 +108,7 @@ const Dashboard: React.FC = () => {
             <Card.Body>
               <Card.Title>Quarantined</Card.Title>
               <Card.Text className="stat-value">
-                {securityStatus?.quarantinedContainers || 0}
+                {(securityStatus?.quarantinedContainers || 0).toLocaleString()}
               </Card.Text>
             </Card.Body>
           </Card>
@@ -119,7 +118,7 @@ const Dashboard: React.FC = () => {
             <Card.Body>
               <Card.Title>New Alerts</Card.Title>
               <Card.Text className="stat-value">
-                {securityStatus?.alertsNew || 0}
+                {(securityStatus?.alertsNew || 0).toLocaleString()}
               </Card.Text>
             </Card.Body>
           </Card>
@@ -134,11 +133,11 @@ const Dashboard: React.FC = () => {
       </Row>
 
       {/* Alerts and Containers */}
-      <Row>
-        <Col id="alerts" lg={8}>
+      <Row className="g-4">
+        <Col id="alerts" xs={12}>
           <AlertPanel />
         </Col>
-        <Col id="containers" lg={4}>
+        <Col id="containers" xs={12}>
           <ContainerList />
         </Col>
       </Row>
