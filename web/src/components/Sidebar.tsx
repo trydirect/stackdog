@@ -1,14 +1,13 @@
 import React from 'react';
+import logoUrl from '../assets/logo.png';
 import './Sidebar.css';
-
-const DASHBOARD_LOGO_URL = 'https://github.com/user-attachments/assets/0c8a9216-8315-4ef7-9b73-d96c40521ed1';
 
 const Sidebar: React.FC = () => {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
         <img
-          src={DASHBOARD_LOGO_URL}
+          src={logoUrl}
           alt="Stackdog logo"
           className="sidebar-logo"
           width={39}

@@ -21,6 +21,9 @@
   width: 39px;
   height: 39px;
   object-fit: contain;
+  flex-shrink: 0;
+  /* The artwork is a black silhouette; the sidebar is dark, so draw it white. */
+  filter: brightness(0) invert(1);
 }
 
 .sidebar-nav {
