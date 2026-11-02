@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Button, Form, Badge, Modal, Spinner, Alert as BootstrapAlert } from 'react-bootstrap';
+import { Card, Button, Form, Badge, Modal, Spinner } from 'react-bootstrap';
 import apiService from '../services/api';
 import { Container, ContainerStatus } from '../types/containers';
 import './ContainerList.css';
@@ -133,7 +133,13 @@ const ContainerList: React.FC = () => {
                   <div className="container-details">
                     <p className="container-image"><span>Image</span><code>{container.image}</code></p>
                     <div className="container-security">
-                      <div><span>Security</span><Badge bg={getSecurityBadge(container.securityStatus.state)}>{container.securityStatus.state}</Badge></div>
+                      <div>
+                        <span>Security</span>
+                        <div className="container-security-badges">
+                          <Badge bg={getSecurityBadge(container.securityStatus.state)}>{container.securityStatus.state}</Badge>
+                          {container.networkActivity.suspiciousActivity && <Badge bg="danger">Suspicious</Badge>}
+                        </div>
+                      </div>
                       <div><span>Risk Score</span><strong style={{ color: getRiskColor(container.riskScore) }}>{container.riskScore}</strong></div>
                     </div>
                     <dl className="network-activity">
@@ -141,7 +147,6 @@ const ContainerList: React.FC = () => {
                       <div><dt>Sent</dt><dd>{formatCount(container.networkActivity.transmittedPackets)} pkts</dd></div>
                       <div><dt>Blocked</dt><dd>{formatCount(container.networkActivity.blockedConnections)}</dd></div>
                     </dl>
-                    {container.networkActivity.suspiciousActivity && <Badge bg="danger">Suspicious</Badge>}
                   </div>
                   <div className="container-actions">
                     <Button variant="outline-primary" size="sm" onClick={() => {

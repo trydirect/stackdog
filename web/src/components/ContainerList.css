@@ -95,6 +95,13 @@
   font-size: 1rem;
 }
 
+.container-list .container-security-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .container-list .network-activity {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

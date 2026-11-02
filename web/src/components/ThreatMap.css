@@ -129,6 +129,11 @@
   box-shadow: 0 4px 16px #172b4514;
 }
 
+/* Hidden tooltips can retain coordinates from before the sidebar resized. */
+.threat-map .recharts-tooltip-wrapper[style*='visibility: hidden'] {
+  display: none;
+}
+
 .threat-map .recharts-legend-item {
   margin: 4px 8px !important;
 }

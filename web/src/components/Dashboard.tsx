@@ -77,7 +77,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <Container as="main" fluid className="dashboard">
-      <Row className="mb-4">
+      <Row id="overview" className="mb-4">
         <Col>
           <div className="dashboard-topbar">
             <h1>Overview</h1>
@@ -89,7 +89,7 @@ const Dashboard: React.FC = () => {
       </Row>
 
       {/* Security Score Card */}
-      <Row id="overview" className="g-3 mb-4">
+      <Row className="g-3 mb-4">
         <Col md={6} lg={3}>
           <SecurityScore score={securityStatus?.overallScore || 0} />
         </Col>
@@ -126,8 +126,8 @@ const Dashboard: React.FC = () => {
       </Row>
 
       {/* Threat Map */}
-      <Row id="threats" className="mb-4">
-        <Col>
+      <Row id="threat-map" className="mb-4">
+        <Col id="threats">
           <ThreatMap />
         </Col>
       </Row>
