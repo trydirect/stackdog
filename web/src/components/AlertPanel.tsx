@@ -13,6 +13,34 @@ export const alertIdFromHash = (hash: string): string | null => {
   return match ? decodeURIComponent(match[1]) : null;
 };
 
+/** Page numbers around `current`, plus first, last and ellipses. Rendering
+ *  every page button overflowed the card once alert counts reached five
+ *  digits; this keeps the row short whatever the total. */
+export const pageItems = (current: number, total: number): (number | 'ellipsis')[] => {
+  if (total <= 9) {
+    return Array.from({ length: total }, (_, index) => index + 1);
+  }
+  const wanted = new Set([1, total, current - 1, current, current + 1]);
+  if (current <= 4) {
+    [2, 3, 4, 5].forEach((page) => wanted.add(page));
+  }
+  if (current >= total - 3) {
+    [total - 1, total - 2, total - 3, total - 4].forEach((page) => wanted.add(page));
+  }
+  const items: (number | 'ellipsis')[] = [];
+  let previous = 0;
+  for (const page of [...wanted]
+    .filter((page) => page >= 1 && page <= total)
+    .sort((a, b) => a - b)) {
+    if (previous && page - previous > 1) {
+      items.push('ellipsis');
+    }
+    items.push(page);
+    previous = page;
+  }
+  return items;
+};
+
 const AlertPanel: React.FC = () => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [stats, setStats] = useState<AlertStats | null>(null);
@@ -25,6 +53,10 @@ const AlertPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // A new filter shrinks the list; staying on page 500 of what used to be
+    // 2700 pages shows an empty table behind a pagination row that no longer
+    // matches. Start over.
+    setCurrentPage(1);
     loadAlerts();
     loadStats();
     setupWebSocket();
@@ -345,15 +377,19 @@ const AlertPanel: React.FC = () => {
                   onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
                 />
-                {[...Array(totalPages)].map((_, i) => (
-                  <Pagination.Item
-                    key={i + 1}
-                    active={i + 1 === currentPage}
-                    onClick={() => setCurrentPage(i + 1)}
-                  >
-                    {i + 1}
-                  </Pagination.Item>
-                ))}
+                {pageItems(currentPage, totalPages).map((item, index) =>
+                  item === 'ellipsis' ? (
+                    <Pagination.Ellipsis key={`gap-${index}`} disabled />
+                  ) : (
+                    <Pagination.Item
+                      key={item}
+                      active={item === currentPage}
+                      onClick={() => setCurrentPage(item)}
+                    >
+                      {item}
+                    </Pagination.Item>
+                  )
+                )}
                 <Pagination.Next
                   onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                   disabled={currentPage === totalPages}
