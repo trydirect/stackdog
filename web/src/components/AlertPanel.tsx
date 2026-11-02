@@ -232,58 +232,71 @@ const AlertPanel: React.FC = () => {
           </BootstrapAlert>
         )}
 
-        {/* Statistics */}
-        {stats && (
-          <div className="alert-stats mb-3">
-            <div className="stat-item">
-              <span className="stat-label">Total</span>
-              <span className="stat-value">{stats.totalCount}</span>
+        <div className="alert-toolbar">
+          {/* Statistics */}
+          {stats && (
+            <div className="alert-stats">
+              <div className="stat-item">
+                <span className="stat-label">Total</span>
+                <span className="stat-value">{stats.totalCount}</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">New</span>
+                <span className="stat-value new">{stats.newCount}</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Acknowledged</span>
+                <span className="stat-value acknowledged">{stats.acknowledgedCount}</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Resolved</span>
+                <span className="stat-value resolved">{stats.resolvedCount}</span>
+              </div>
             </div>
-            <div className="stat-item">
-              <span className="stat-label">New</span>
-              <span className="stat-value new">{stats.newCount}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-label">Acknowledged</span>
-              <span className="stat-value acknowledged">{stats.acknowledgedCount}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-label">Resolved</span>
-              <span className="stat-value resolved">{stats.resolvedCount}</span>
-            </div>
+          )}
+
+          {/* Filters */}
+          <div className="alert-filters">
+            <Form.Group className="filter-group">
+              <Form.Label>Filter by severity</Form.Label>
+              <Form.Select
+                aria-label="Filter by severity"
+                onChange={(e) => setFilter({ ...filter, severity: e.target.value ? [e.target.value as AlertSeverity] : undefined })}
+              >
+                <option value="">All Severities</option>
+                <option value="Critical">Critical</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+                <option value="Info">Info</option>
+              </Form.Select>
+            </Form.Group>
+
+            <Form.Group className="filter-group">
+              <Form.Label>Filter by status</Form.Label>
+              <Form.Select
+                aria-label="Filter by status"
+                onChange={(e) => setFilter({ ...filter, status: e.target.value ? [e.target.value as AlertStatus] : undefined })}
+              >
+                <option value="">All Statuses</option>
+                <option value="New">New</option>
+                <option value="Acknowledged">Acknowledged</option>
+                <option value="Resolved">Resolved</option>
+              </Form.Select>
+            </Form.Group>
           </div>
-        )}
 
-        {/* Filters */}
-        <div className="alert-filters mb-3">
-          <Form.Group className="filter-group">
-            <Form.Label>Filter by severity</Form.Label>
-            <Form.Select
-              aria-label="Filter by severity"
-              onChange={(e) => setFilter({ ...filter, severity: e.target.value ? [e.target.value as AlertSeverity] : undefined })}
-            >
-              <option value="">All Severities</option>
-              <option value="Critical">Critical</option>
-              <option value="High">High</option>
-              <option value="Medium">Medium</option>
-              <option value="Low">Low</option>
-              <option value="Info">Info</option>
-            </Form.Select>
-          </Form.Group>
-
-          <Form.Group className="filter-group">
-            <Form.Label>Filter by status</Form.Label>
-            <Form.Select
-              aria-label="Filter by status"
-              onChange={(e) => setFilter({ ...filter, status: e.target.value ? [e.target.value as AlertStatus] : undefined })}
-            >
-              <option value="">All Statuses</option>
-              <option value="New">New</option>
-              <option value="Acknowledged">Acknowledged</option>
-              <option value="Resolved">Resolved</option>
-            </Form.Select>
-          </Form.Group>
         </div>
+
+        {!loading && alerts.length > 0 && (
+          <Form.Check
+            className="alert-selection"
+            label="Select all alerts"
+            id="select-all-alerts"
+            checked={selectedAlerts.size === alerts.length}
+            onChange={handleSelectAll}
+          />
+        )}
 
         {/* Bulk Actions */}
         {selectedAlerts.size > 0 && (
@@ -297,18 +310,25 @@ const AlertPanel: React.FC = () => {
         {/* Alerts Table */}
         {loading ? (
           <div className="text-center">
-            <Spinner animation="border" />
+            <Spinner animation="border" role="status"><span className="visually-hidden">Loading alerts...</span></Spinner>
           </div>
         ) : (
           <>
-            <Table hover responsive>
+            <Table hover responsive className="alerts-table">
+              <caption className="visually-hidden">Recent security alerts</caption>
+              <colgroup>
+                <col className="select-column" />
+                <col className="severity-column" />
+                <col className="type-column" />
+                <col />
+                <col className="status-column" />
+                <col className="time-column" />
+                <col className="actions-column" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>
-                    <Form.Check
-                      aria-label="Select all alerts"
-                      onChange={handleSelectAll}
-                    />
+                    <span className="visually-hidden">Select</span>
                   </th>
                   <th>Severity</th>
                   <th>Type</th>
@@ -323,56 +343,78 @@ const AlertPanel: React.FC = () => {
                   <tr key={alert.id}>
                     <td>
                       <Form.Check
+                        aria-label={`Select alert ${alert.id}`}
                         checked={selectedAlerts.has(alert.id)}
                         onChange={() => handleSelectAlert(alert.id)}
                       />
                     </td>
-                    <td>
+                    <td data-label="Severity">
                       <Badge bg={getSeverityBadge(alert.severity)}>{alert.severity}</Badge>
                     </td>
-                    <td>{alert.alertType}</td>
-                    <td>{alert.message}</td>
-                    <td>
+                    <td data-label="Type" className="alert-type">{alert.alertType}</td>
+                    <td data-label="Message" className="alert-message">
+                      {alert.message.split(/((?:sha256:)?[a-f0-9]{64})/gi).map((part, index) =>
+                        /^(?:sha256:)?[a-f0-9]{64}$/i.test(part)
+                          ? <code key={index} className="alert-hash">{part}</code>
+                          : part
+                      )}
+                    </td>
+                    <td data-label="Status">
                       <Badge bg={getStatusBadge(alert.status)}>{alert.status}</Badge>
                     </td>
-                    <td>{new Date(alert.timestamp).toLocaleString()}</td>
-                    <td>
-                      {alert.status === 'New' && (
+                    <td data-label="Time" className="alert-time">
+                      <time dateTime={alert.timestamp}>
+                        <span>{new Date(alert.timestamp).toLocaleDateString()}</span>
+                        <span>{new Date(alert.timestamp).toLocaleTimeString()}</span>
+                      </time>
+                    </td>
+                    <td className="alert-action-cell">
+                      <div className="alert-actions">
+                        {alert.status === 'New' && (
+                          <Button
+                            variant="outline-warning"
+                            size="sm"
+                            onClick={() => handleAcknowledge(alert.id)}
+                          >
+                            Acknowledge
+                          </Button>
+                        )}
+                        {alert.status !== 'Resolved' && (
+                          <Button
+                            variant="outline-success"
+                            size="sm"
+                            onClick={() => handleResolve(alert.id)}
+                          >
+                            Resolve
+                          </Button>
+                        )}
                         <Button
-                          variant="outline-warning"
+                          variant="outline-primary"
                           size="sm"
-                          onClick={() => handleAcknowledge(alert.id)}
+                          onClick={() => openDetails(alert)}
                         >
-                          Acknowledge
+                          Details
                         </Button>
-                      )}
-                      {alert.status !== 'Resolved' && (
-                        <Button
-                          variant="outline-success"
-                          size="sm"
-                          className="ms-1"
-                          onClick={() => handleResolve(alert.id)}
-                        >
-                          Resolve
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline-primary"
-                        size="sm"
-                        className="ms-1"
-                        onClick={() => openDetails(alert)}
-                      >
-                        Details
-                      </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </Table>
 
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <Pagination className="justify-content-center">
+            {alerts.length === 0 && <p className="alert-empty" role="status">No alerts match the selected filters.</p>}
+          </>
+        )}
+      </Card.Body>
+      {!loading && alerts.length > 0 && (
+        <Card.Footer className="alert-footer">
+          <span className="alert-page-summary">
+            {(currentPage - 1) * ITEMS_PER_PAGE + 1}–{Math.min(currentPage * ITEMS_PER_PAGE, alerts.length)} of {alerts.length.toLocaleString()} alerts
+          </span>
+
+          {totalPages > 1 && (
+            <nav aria-label="Alert pages">
+              <Pagination size="sm">
                 <Pagination.Prev
                   onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
@@ -395,10 +437,10 @@ const AlertPanel: React.FC = () => {
                   disabled={currentPage === totalPages}
                 />
               </Pagination>
-            )}
-          </>
-        )}
-      </Card.Body>
+            </nav>
+          )}
+        </Card.Footer>
+      )}
 
       {/* Alert Detail Modal */}
       <Modal show={showModal} onHide={closeDetails}>

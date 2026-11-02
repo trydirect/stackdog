@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import AlertPanel from '../AlertPanel';
-import { alertIdFromHash } from '../AlertPanel';
+import { alertIdFromHash, pageItems } from '../AlertPanel';
 import apiService from '../../services/api';
 import webSocketService from '../../services/websocket';
 
@@ -49,6 +49,25 @@ describe('AlertPanel Component', () => {
     expect(await screen.findByText('Suspicious activity detected')).toBeInTheDocument();
 
     expect(screen.getByText('Rule violation detected')).toBeInTheDocument();
+  });
+
+  test('preserves full hash and log text while formatting the timestamp', async () => {
+    const hash = '6129f31276ac69cf51a5b0261646721da3ac8e83155c31f0c381bc37ce951b59';
+    const message = `Container (${hash})\nLog: suspicious process detected`;
+    (apiService.getAlerts as jest.Mock).mockResolvedValue([{ ...mockAlerts[0], message }]);
+    const { container } = render(<AlertPanel />);
+
+    expect(await screen.findByText(hash)).toBeInTheDocument();
+    expect(container.querySelector('.alert-message')).toHaveTextContent(`Container (${hash}) Log: suspicious process detected`);
+    expect(container.querySelector('time')).toHaveAttribute('datetime', mockAlerts[0].timestamp);
+  });
+
+  test('shows a useful empty state when filters return no alerts', async () => {
+    (apiService.getAlerts as jest.Mock).mockResolvedValue([]);
+    render(<AlertPanel />);
+
+    expect(await screen.findByText('No alerts match the selected filters.')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Alert pages' })).not.toBeInTheDocument();
   });
 
   test('filters alerts by severity', async () => {
@@ -183,5 +202,16 @@ describe('alertIdFromHash', () => {
     expect(alertIdFromHash('#alerts')).toBeNull();
     expect(alertIdFromHash('#containers')).toBeNull();
     expect(alertIdFromHash('')).toBeNull();
+  });
+});
+
+describe('pageItems', () => {
+  test.each([1, 4, 1300, 2698, 2700])('keeps pagination bounded on page %i of 2700', (current) => {
+    const items = pageItems(current, 2700);
+    expect(items.length).toBeLessThanOrEqual(9);
+    expect(items).toContain(1);
+    expect(items).toContain(current);
+    expect(items).toContain(2700);
+    expect(items.filter(item => item === 'ellipsis').length).toBeLessThanOrEqual(2);
   });
 });
