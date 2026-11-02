@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import AlertPanel from '../AlertPanel';
 import { alertIdFromHash, pageItems } from '../AlertPanel';
 import apiService from '../../services/api';
@@ -68,6 +68,30 @@ describe('AlertPanel Component', () => {
 
     expect(await screen.findByText('No alerts match the selected filters.')).toBeInTheDocument();
     expect(screen.queryByRole('navigation', { name: 'Alert pages' })).not.toBeInTheDocument();
+  });
+
+  test('distinguishes a loading failure from a successful empty result', async () => {
+    (apiService.getAlerts as jest.Mock).mockRejectedValue(new Error('Network unavailable'));
+    render(<AlertPanel />);
+
+    expect(await screen.findByText('Failed to load alerts')).toBeInTheDocument();
+    expect(screen.queryByText('No alerts match the selected filters.')).not.toBeInTheDocument();
+  });
+
+  test('opens full alert details and metadata, then restores the section link on close', async () => {
+    const metadata = { source: 'sha256:' + 'a'.repeat(64), log: 'First line\nSecond line' };
+    (apiService.getAlerts as jest.Mock).mockResolvedValue([{ ...mockAlerts[0], metadata }]);
+    render(<AlertPanel />);
+
+    fireEvent.click(await screen.findByText('Details'));
+    const dialog = await screen.findByRole('dialog', { name: 'Alert Details' });
+    expect(within(dialog).getByText('alert-1')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Alert metadata')).toHaveTextContent(metadata.source);
+    expect(window.location.hash).toBe('#alerts/alert-1');
+
+    fireEvent.click(within(dialog).getByText('Close'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(window.location.hash).toBe('#alerts');
   });
 
   test('filters alerts by severity', async () => {

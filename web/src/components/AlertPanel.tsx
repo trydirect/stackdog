@@ -4,6 +4,7 @@ import apiService from '../services/api';
 import webSocketService from '../services/websocket';
 import { Alert, AlertSeverity, AlertStatus, AlertFilter, AlertStats } from '../types/alerts';
 import './AlertPanel.css';
+import './DetailsModal.css';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -238,19 +239,19 @@ const AlertPanel: React.FC = () => {
             <div className="alert-stats">
               <div className="stat-item">
                 <span className="stat-label">Total</span>
-                <span className="stat-value">{stats.totalCount}</span>
+                <span className="stat-value">{stats.totalCount.toLocaleString()}</span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">New</span>
-                <span className="stat-value new">{stats.newCount}</span>
+                <span className="stat-value new">{stats.newCount.toLocaleString()}</span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Acknowledged</span>
-                <span className="stat-value acknowledged">{stats.acknowledgedCount}</span>
+                <span className="stat-value acknowledged">{stats.acknowledgedCount.toLocaleString()}</span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Resolved</span>
-                <span className="stat-value resolved">{stats.resolvedCount}</span>
+                <span className="stat-value resolved">{stats.resolvedCount.toLocaleString()}</span>
               </div>
             </div>
           )}
@@ -351,7 +352,7 @@ const AlertPanel: React.FC = () => {
                     <td data-label="Severity">
                       <Badge bg={getSeverityBadge(alert.severity)}>{alert.severity}</Badge>
                     </td>
-                    <td data-label="Type" className="alert-type">{alert.alertType}</td>
+                    <td data-label="Type" className="alert-type">{alert.alertType.replace(/([a-z])([A-Z])/g, '$1 $2')}</td>
                     <td data-label="Message" className="alert-message">
                       {alert.message.split(/((?:sha256:)?[a-f0-9]{64})/gi).map((part, index) =>
                         /^(?:sha256:)?[a-f0-9]{64}$/i.test(part)
@@ -402,7 +403,7 @@ const AlertPanel: React.FC = () => {
               </tbody>
             </Table>
 
-            {alerts.length === 0 && <p className="alert-empty" role="status">No alerts match the selected filters.</p>}
+            {!error && alerts.length === 0 && <p className="alert-empty" role="status">No alerts match the selected filters.</p>}
           </>
         )}
       </Card.Body>
@@ -443,25 +444,28 @@ const AlertPanel: React.FC = () => {
       )}
 
       {/* Alert Detail Modal */}
-      <Modal show={showModal} onHide={closeDetails}>
+      <Modal className="security-details-modal alert-details-modal" size="lg" centered scrollable aria-labelledby="alert-details-title" show={showModal} onHide={closeDetails}>
         <Modal.Header closeButton>
-          <Modal.Title>Alert Details</Modal.Title>
+          <Modal.Title as="h2" id="alert-details-title">Alert Details</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           {selectedAlert && (
-            <div>
-              <p><strong>Type:</strong> {selectedAlert.alertType}</p>
-              <p><strong>Severity:</strong> {selectedAlert.severity}</p>
-              <p><strong>Status:</strong> {selectedAlert.status}</p>
-              <p><strong>Message:</strong> {selectedAlert.message}</p>
-              <p><strong>Time:</strong> {new Date(selectedAlert.timestamp).toLocaleString()}</p>
+            <>
+              <dl className="detail-grid">
+                <dt>ID</dt><dd><code>{selectedAlert.id}</code></dd>
+                <dt>Type</dt><dd>{selectedAlert.alertType}</dd>
+                <dt>Severity</dt><dd><Badge bg={getSeverityBadge(selectedAlert.severity)}>{selectedAlert.severity}</Badge></dd>
+                <dt>Status</dt><dd>{selectedAlert.status}</dd>
+                <dt>Time</dt><dd><time dateTime={selectedAlert.timestamp}>{new Date(selectedAlert.timestamp).toLocaleString()}</time></dd>
+                <dt>Message</dt><dd className="detail-message">{selectedAlert.message}</dd>
+              </dl>
               {selectedAlert.metadata && (
-                <div>
-                  <strong>Metadata:</strong>
+                <section className="detail-metadata" aria-label="Alert metadata">
+                  <h3>Metadata</h3>
                   <pre>{JSON.stringify(selectedAlert.metadata, null, 2)}</pre>
-                </div>
+                </section>
               )}
-            </div>
+            </>
           )}
         </Modal.Body>
         <Modal.Footer>

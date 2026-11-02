@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import ContainerList from '../ContainerList';
 import apiService from '../../services/api';
 
@@ -158,6 +158,37 @@ describe('ContainerList Component', () => {
     expect(screen.getAllByText('Quarantined').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Release')).toBeInTheDocument();
     expect(screen.queryByText('Quarantine')).not.toBeInTheDocument();
+  });
+
+  test('keeps security-state quarantine visible in the Quarantined filter', async () => {
+    const quarantined = {
+      ...mockContainers[0],
+      securityStatus: { ...mockContainers[0].securityStatus, state: 'Quarantined' as const },
+    };
+    (apiService.getContainers as jest.Mock).mockResolvedValue([quarantined, mockContainers[1]]);
+    render(<ContainerList />);
+    expect(await screen.findByText('web-server')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'Quarantined' } });
+    expect(await screen.findByText('web-server')).toBeInTheDocument();
+    expect(screen.queryByText('database')).not.toBeInTheDocument();
+    expect(screen.getByText('Release')).toBeInTheDocument();
+  });
+
+  test('shows complete identifiers, timestamps and unavailable metrics in the details dialog', async () => {
+    const id = 'a'.repeat(64);
+    (apiService.getContainers as jest.Mock).mockResolvedValue([{ ...mockContainers[0], id }]);
+    render(<ContainerList />);
+    fireEvent.click(await screen.findByText('Details'));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Container Details' });
+    expect(within(dialog).getByText(id)).toBeInTheDocument();
+    expect(within(dialog).getByText('1.0 KB')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Unavailable')).toHaveLength(2);
+    expect(dialog.querySelector('time')).toHaveAttribute('datetime', mockContainers[0].createdAt);
+
+    fireEvent.click(within(dialog).getByText('Close'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   test('filters by status', async () => {
