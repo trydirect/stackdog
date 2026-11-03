@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Button, Form, Badge, Modal, Spinner, Alert as BootstrapAlert } from 'react-bootstrap';
+import { Card, Button, Form, Badge, Modal, Spinner } from 'react-bootstrap';
 import apiService from '../services/api';
 import { Container, ContainerStatus } from '../types/containers';
 import './ContainerList.css';
+import './DetailsModal.css';
 
 const ContainerList: React.FC = () => {
   const [containers, setContainers] = useState<Container[]>([]);
@@ -21,7 +22,7 @@ const ContainerList: React.FC = () => {
     try {
       setLoading(true);
       const data = await apiService.getContainers();
-      setContainers(filterStatus ? data.filter((c: Container) => c.status === filterStatus) : data);
+      setContainers(filterStatus ? data.filter((c: Container) => (c.securityStatus.state === 'Quarantined' ? 'Quarantined' : c.status) === filterStatus) : data);
     } catch (err) {
       console.error('Error loading containers:', err);
     } finally {
@@ -73,9 +74,9 @@ const ContainerList: React.FC = () => {
   };
 
   const getRiskColor = (score: number) => {
-    if (score < 30) return '#27ae60';
-    if (score < 60) return '#f39c12';
-    return '#e74c3c';
+    if (score < 30) return '#047857';
+    if (score < 60) return '#92400e';
+    return '#b42318';
   };
 
   const formatCount = (value: number | null) => (value === null ? 'n/a' : value.toLocaleString());
@@ -96,7 +97,7 @@ const ContainerList: React.FC = () => {
         <Card.Title>Containers</Card.Title>
       </Card.Header>
       <Card.Body>
-        <Form.Group className="mb-3">
+        <Form.Group className="container-filter mb-4">
           <Form.Label>Filter by status</Form.Label>
           <Form.Select
             aria-label="Filter by status"
@@ -113,114 +114,86 @@ const ContainerList: React.FC = () => {
 
         {loading ? (
           <div className="text-center">
-            <Spinner animation="border" />
+            <Spinner animation="border" role="status"><span className="visually-hidden">Loading containers...</span></Spinner>
           </div>
         ) : (
           <div className="container-items">
-            {containers.map((container) => (
-              <div key={container.id} className="container-item">
-                {(() => {
-                  const isQuarantined =
-                    container.status === 'Quarantined' || container.securityStatus.state === 'Quarantined';
+            {containers.length === 0 && <p className="container-empty" role="status">No containers match the selected status.</p>}
+            {containers.map((container) => {
+              const isQuarantined = container.status === 'Quarantined' || container.securityStatus.state === 'Quarantined';
 
-                  return (
-                    <>
-                <div className="container-header">
-                  <h5>{container.name}</h5>
-                  <Badge bg={getStatusBadge(isQuarantined ? 'Quarantined' : container.status)}>
-                    {isQuarantined ? 'Quarantined' : container.status}
-                  </Badge>
-                </div>
-                <div className="container-details">
-                  <p className="mb-1"><strong>Image:</strong> {container.image}</p>
-                  <p className="mb-1">
-                    <strong>Security:</strong>{' '}
-                    <Badge bg={getSecurityBadge(container.securityStatus.state)}>
-                      {container.securityStatus.state}
+              return (
+                <article key={container.id} className="container-item" aria-label={container.name}>
+                  <div className="container-header">
+                    <h5>{container.name}</h5>
+                    <Badge bg={getStatusBadge(isQuarantined ? 'Quarantined' : container.status)}>
+                      {isQuarantined ? 'Quarantined' : container.status}
                     </Badge>
-                  </p>
-                  <p className="mb-1">
-                    <strong>Risk Score:</strong>{' '}
-                    <span style={{ color: getRiskColor(container.riskScore) }}>
-                      {container.riskScore}
-                    </span>
-                  </p>
-                  <div className="network-activity">
-                    <small>
-                      ⬇ {formatCount(container.networkActivity.receivedPackets)} pkts | 
-                      ⬆ {formatCount(container.networkActivity.transmittedPackets)} pkts | 
-                      🚫 {formatCount(container.networkActivity.blockedConnections)}
-                    </small>
-                    {container.networkActivity.suspiciousActivity && (
-                      <Badge bg="danger" className="ms-2">Suspicious</Badge>
-                    )}
                   </div>
-                </div>
-                <div className="container-actions">
-                  <Button
-                    variant="outline-primary"
-                    size="sm"
-                    onClick={() => {
+                  <div className="container-details">
+                    <p className="container-image"><span>Image</span><code>{container.image}</code></p>
+                    <div className="container-security">
+                      <div>
+                        <span>Security</span>
+                        <div className="container-security-badges">
+                          <Badge bg={getSecurityBadge(container.securityStatus.state)}>{container.securityStatus.state}</Badge>
+                          {container.networkActivity.suspiciousActivity && <Badge bg="danger">Suspicious</Badge>}
+                        </div>
+                      </div>
+                      <div><span>Risk Score</span><strong style={{ color: getRiskColor(container.riskScore) }}>{container.riskScore}</strong></div>
+                    </div>
+                    <dl className="network-activity">
+                      <div><dt>Received</dt><dd>{formatCount(container.networkActivity.receivedPackets)} pkts</dd></div>
+                      <div><dt>Sent</dt><dd>{formatCount(container.networkActivity.transmittedPackets)} pkts</dd></div>
+                      <div><dt>Blocked</dt><dd>{formatCount(container.networkActivity.blockedConnections)}</dd></div>
+                    </dl>
+                  </div>
+                  <div className="container-actions">
+                    <Button variant="outline-primary" size="sm" onClick={() => {
                       setSelectedContainer(container);
                       setShowModal(true);
-                    }}
-                  >
-                    Details
-                  </Button>
-                  {!isQuarantined && container.status === 'Running' && (
-                    <Button
-                      variant="outline-danger"
-                      size="sm"
-                      onClick={() => {
+                    }}>Details</Button>
+                    {!isQuarantined && container.status === 'Running' && (
+                      <Button variant="outline-danger" size="sm" onClick={() => {
                         setSelectedContainer(container);
                         setShowQuarantineModal(true);
-                      }}
-                    >
-                      Quarantine
-                    </Button>
-                  )}
-                  {isQuarantined && (
-                    <Button
-                      variant="outline-success"
-                      size="sm"
-                      onClick={() => handleRelease(container.id)}
-                    >
-                      Release
-                    </Button>
-                  )}
-                </div>
-                    </>
-                  );
-                })()}
-              </div>
-            ))}
+                      }}>Quarantine</Button>
+                    )}
+                    {isQuarantined && (
+                      <Button variant="outline-success" size="sm" onClick={() => handleRelease(container.id)}>Release</Button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </Card.Body>
 
       {/* Detail Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)}>
+      <Modal className="security-details-modal container-details-modal" size="lg" centered scrollable aria-labelledby="container-details-title" show={showModal} onHide={() => setShowModal(false)}>
         <Modal.Header closeButton>
-          <Modal.Title>Container Details</Modal.Title>
+          <Modal.Title as="h2" id="container-details-title">Container Details</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           {selectedContainer && (
-            <div>
-              <p><strong>Name:</strong> {selectedContainer.name}</p>
-              <p><strong>ID:</strong> {selectedContainer.id}</p>
-              <p><strong>Image:</strong> {selectedContainer.image}</p>
-              <p><strong>Status:</strong> {selectedContainer.status}</p>
-              <p><strong>Security:</strong> {selectedContainer.securityStatus.state}</p>
-              <p><strong>Risk Score:</strong> {selectedContainer.riskScore}</p>
-              <p><strong>Threats:</strong> {selectedContainer.securityStatus.threats}</p>
-              <p><strong>Vulnerabilities:</strong> {selectedContainer.securityStatus.vulnerabilities ?? 'Unavailable'}</p>
-              <p><strong>Last Scan:</strong> {formatDateTime(selectedContainer.securityStatus.lastScan)}</p>
-              <p><strong>RX Traffic:</strong> {formatBytes(selectedContainer.networkActivity.receivedBytes)}</p>
-              <p><strong>TX Traffic:</strong> {formatBytes(selectedContainer.networkActivity.transmittedBytes)}</p>
-              <p><strong>RX Packets:</strong> {formatCount(selectedContainer.networkActivity.receivedPackets)}</p>
-              <p><strong>TX Packets:</strong> {formatCount(selectedContainer.networkActivity.transmittedPackets)}</p>
-              <p><strong>Blocked Connections:</strong> {formatCount(selectedContainer.networkActivity.blockedConnections)}</p>
-            </div>
+            <dl className="detail-grid">
+              <dt>Name</dt><dd>{selectedContainer.name}</dd>
+              <dt>ID</dt><dd><code>{selectedContainer.id}</code></dd>
+              <dt>Image</dt><dd><code>{selectedContainer.image}</code></dd>
+              <dt>Status</dt><dd>{selectedContainer.securityStatus.state === 'Quarantined' ? 'Quarantined' : selectedContainer.status}</dd>
+              <dt>Security</dt><dd>{selectedContainer.securityStatus.state}</dd>
+              <dt>Risk Score</dt><dd>{selectedContainer.riskScore}</dd>
+              <dt>Threats</dt><dd>{selectedContainer.securityStatus.threats}</dd>
+              <dt>Vulnerabilities</dt><dd>{selectedContainer.securityStatus.vulnerabilities ?? 'Unavailable'}</dd>
+              <dt>Created</dt><dd><time dateTime={selectedContainer.createdAt}>{formatDateTime(selectedContainer.createdAt)}</time></dd>
+              <dt>Last Scan</dt><dd>{formatDateTime(selectedContainer.securityStatus.lastScan)}</dd>
+              <dt>RX Traffic</dt><dd>{formatBytes(selectedContainer.networkActivity.receivedBytes)}</dd>
+              <dt>TX Traffic</dt><dd>{formatBytes(selectedContainer.networkActivity.transmittedBytes)}</dd>
+              <dt>RX Packets</dt><dd>{formatCount(selectedContainer.networkActivity.receivedPackets)}</dd>
+              <dt>TX Packets</dt><dd>{formatCount(selectedContainer.networkActivity.transmittedPackets)}</dd>
+              <dt>Blocked Connections</dt><dd>{formatCount(selectedContainer.networkActivity.blockedConnections)}</dd>
+            </dl>
           )}
         </Modal.Body>
         <Modal.Footer>
@@ -229,13 +202,13 @@ const ContainerList: React.FC = () => {
       </Modal>
 
       {/* Quarantine Modal */}
-      <Modal show={showQuarantineModal} onHide={() => setShowQuarantineModal(false)}>
+      <Modal className="security-details-modal container-quarantine-modal" centered aria-labelledby="container-quarantine-title" show={showQuarantineModal} onHide={() => setShowQuarantineModal(false)}>
         <Modal.Header closeButton>
-          <Modal.Title>Confirm Quarantine</Modal.Title>
+          <Modal.Title as="h2" id="container-quarantine-title">Confirm Quarantine</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <p>Are you sure you want to quarantine this container?</p>
-          <Form.Group>
+          <Form.Group controlId="quarantine-reason">
             <Form.Label>Reason</Form.Label>
             <Form.Control
               as="textarea"
