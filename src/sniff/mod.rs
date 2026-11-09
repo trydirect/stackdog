@@ -1801,10 +1801,24 @@ mod tests {
         );
         let mut summary = make_summary("unused", AnomalySeverity::Critical);
         summary.anomalies = logins;
-        orchestrator
+        let apply = orchestrator
             .apply_ip_ban(&entries, &test_log_source(), &summary, &engine)
-            .await
-            .unwrap();
+            .await;
+
+        // On Linux without root the firewall write fails before the block is
+        // recorded. That is a test-environment limit, not detector behavior.
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            let error = apply.unwrap_err().to_string();
+            assert!(
+                error.contains("Operation not permitted")
+                    || error.contains("Permission denied")
+                    || error.contains("you must be root")
+            );
+            return;
+        }
+
+        apply.unwrap();
 
         assert!(
             active_block_for_ip(&orchestrator.pool, "89.116.89.18")
@@ -1857,10 +1871,24 @@ mod tests {
             .collect();
         assert_eq!(summary.anomalies.len(), 2);
 
-        orchestrator
+        let apply = orchestrator
             .apply_ip_ban(&[], &test_log_source(), &summary, &engine)
-            .await
-            .unwrap();
+            .await;
+
+        // On Linux without root the firewall write fails before the block is
+        // recorded. That is a test-environment limit, not detector behavior.
+        #[cfg(target_os = "linux")]
+        if !running_as_root() {
+            let error = apply.unwrap_err().to_string();
+            assert!(
+                error.contains("Operation not permitted")
+                    || error.contains("Permission denied")
+                    || error.contains("you must be root")
+            );
+            return;
+        }
+
+        apply.unwrap();
 
         assert!(
             active_block_for_ip(&orchestrator.pool, "95.163.183.216")
