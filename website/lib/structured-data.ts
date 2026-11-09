@@ -25,7 +25,7 @@ export function buildHomeStructuredData(faqEntries: FaqEntry[]) {
         name: 'Stackdog Security',
         applicationCategory: 'SecurityApplication',
         operatingSystem: 'Linux',
-        softwareVersion: '0.2.9',
+        softwareVersion: '0.3.0',
         url: SITE_URL,
         downloadUrl: GITHUB_URL,
         description:
