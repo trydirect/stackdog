@@ -25,6 +25,10 @@ pub struct OffenseInput {
     pub container_id: Option<String>,
     pub source_path: Option<String>,
     pub sample_line: Option<String>,
+    /// Ban on this offense alone, whatever the threshold says. For findings
+    /// where one line already means a foothold: an attacker who gets in with
+    /// one request can switch the monitoring off before offense two.
+    pub immediate: bool,
 }
 
 /// What happened to a manual ban request.
@@ -149,7 +153,7 @@ impl IpBanEngine {
             now - Duration::seconds(self.config.find_time_secs as i64),
         )?;
 
-        if offense_count >= self.config.max_retries {
+        if offense_count >= self.config.max_retries || offense.immediate {
             self.block_ip(&offense, offense_count, now).await?;
             return Ok(true);
         }
@@ -507,6 +511,7 @@ impl IpBanEngine {
             container_id: None,
             source_path: None,
             sample_line: None,
+            immediate: true,
         };
         self.apply_block(&offense, 1, now, duration).await?;
         Ok(BanOutcome::Banned {
@@ -758,6 +763,7 @@ mod tests {
                 container_id: None,
                 source_path: Some("/var/log/auth.log".into()),
                 sample_line: Some("Failed password from 192.0.2.44".into()),
+                immediate: false,
             })
             .await
             .unwrap();
@@ -770,6 +776,7 @@ mod tests {
                 container_id: None,
                 source_path: Some("/var/log/auth.log".into()),
                 sample_line: Some("Failed password from 192.0.2.44".into()),
+                immediate: false,
             })
             .await;
 
@@ -840,6 +847,7 @@ mod tests {
             container_id: None,
             source_path: Some("/var/log/auth.log".into()),
             sample_line: Some("Failed password for root from 198.51.100.7 port 22".into()),
+            immediate: false,
         };
         let until = "2026-09-10T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
@@ -862,6 +870,7 @@ mod tests {
             container_id: Some("0f3b46ca0c16aaaaaaaa".into()),
             source_path: None,
             sample_line: Some("x".repeat(5_000)),
+            immediate: false,
         };
         let until = "2026-09-10T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
@@ -958,6 +967,7 @@ mod tests {
                     container_id: None,
                     source_path: Some("/var/log/auth.log".into()),
                     sample_line: Some(format!("Failed password from {ip}")),
+                    immediate: false,
                 })
                 .await
                 .unwrap();
@@ -1005,6 +1015,7 @@ mod tests {
                     container_id: None,
                     source_path: Some("/var/log/auth.log".into()),
                     sample_line: Some("Failed password from 192.0.2.77".into()),
+                    immediate: false,
                 })
                 .await;
         }
@@ -1078,6 +1089,7 @@ mod tests {
                 container_id: None,
                 source_path: Some("/var/log/auth.log".into()),
                 sample_line: Some("Failed password from 192.0.2.55".into()),
+                immediate: false,
             })
             .await;
 
@@ -1208,6 +1220,7 @@ mod tests {
                     container_id: None,
                     source_path: None,
                     sample_line: None,
+                    immediate: false,
                 })
                 .await
                 .unwrap();

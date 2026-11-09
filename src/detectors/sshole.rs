@@ -186,7 +186,7 @@ pub fn findings(installs: &[(String, String, String)]) -> Vec<DetectorFinding> {
             detector_id: VERSION_DETECTOR_ID.into(),
             family: DetectorFamily::Vulnerability,
             description: format!(
-                "SSHole authentication bypass ({CVES}): OpenSSH {version} on {owner} ({name}) predates the 10.6p2 fix. This is the vulnerable configuration: musl, passwords checked without PAM. An oversized password logs the attacker into accounts whose password field is `*` (root, alpine). Upgrade to 10.6p2, 10.6_p2 on Alpine, and restart sshd"
+                "SSHole authentication bypass ({CVES}): OpenSSH {version} on {owner} ({name}) predates the 10.6p2 fix. This is the vulnerable configuration: musl, passwords checked without PAM. An oversized password logs the attacker into accounts whose password field is `*` (root, alpine). Upgrade to 10.6p2, 10.6_p2 on Alpine, and restart sshd. Until the upgrade Stackdog is defending this box: it bans on the spot any address that password-logs into a key-only account, and keeps watching the auth logs"
             ),
             severity: AnomalySeverity::Critical,
             confidence: 92,
@@ -352,6 +352,8 @@ mod tests {
         assert_eq!(found[0].severity, AnomalySeverity::Critical);
         assert!(found[0].description.contains("10.6_p1-r0"));
         assert!(found[0].description.contains("restart sshd"));
+        // The Slack message must say what defends the box until the upgrade.
+        assert!(found[0].description.contains("Until the upgrade"));
 
         let patched = tempfile::tempdir().unwrap();
         assert!(monitor_with(patched.path(), "P:openssh-server\nV:10.6_p2-r0\n\n").is_empty());
@@ -393,12 +395,16 @@ mod tests {
     fn test_password_login_to_keyonly_account_is_reported() {
         let detector = SshPasswordLoginDetector::with_users(&["root", "alpine"]);
         let found = detector.detect(&entries(&[
+            // Captured verbatim from a live Alpine sshd (password login in a
+            // lab container): the exact line shape a successful SSHole login
+            // produces.
+            "Accepted password for root from 192.168.65.1 port 28046 ssh2",
             "Nov  6 10:00:00 host sshd[123]: Accepted password for root from 89.116.89.18 port 51234 ssh2",
             "Nov  6 10:00:01 host sshd[124]: Accepted password for alpine from 89.116.89.18 port 51236 ssh2",
         ]));
-        assert_eq!(found.len(), 2);
+        assert_eq!(found.len(), 3);
         assert_eq!(found[0].detector_id, PASSWORD_LOGIN_DETECTOR_ID);
-        assert!(found[0].sample_line.contains("89.116.89.18"));
+        assert!(found[1].sample_line.contains("89.116.89.18"));
     }
 
     #[test]

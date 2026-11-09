@@ -305,7 +305,7 @@ pub fn findings(installs: &[PhpInstall]) -> Vec<DetectorFinding> {
             ),
         };
         let description = format!(
-            "{}. Until then, session.upload_progress.enabled = 0 closes the confirmed php-fpm path",
+            "{}. Until then, session.upload_progress.enabled = 0 closes the confirmed php-fpm path, and Stackdog keeps defending this box: it bans clients whose requests trip the startup out-of-memory step, scans the web roots for shells, and bans whoever drives a flagged file",
             description
         );
 

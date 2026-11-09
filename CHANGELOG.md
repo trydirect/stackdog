@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   affected and are not reported. `ssh.password-login` alerts on password
   logins to key-only accounts (root, alpine by default,
   `STACKDOG_SSHOLE_KEYONLY_USERS` extends the list) and feeds the ban engine:
-  that line is what a successful SSHole login leaves in the logs.
+  that line is what a successful SSHole login leaves in the logs. A single
+  line bans the address on the spot (allowlists and protected addresses
+  exempt): a foothold must not wait for the offense threshold.
   `STACKDOG_SSHOLE_ENABLED=false` turns both off.
 
 ## [0.2.9] - 2026-10-31

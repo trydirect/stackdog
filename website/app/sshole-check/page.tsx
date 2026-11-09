@@ -44,7 +44,7 @@ const checks = [
   [
     'ssh.password-login',
     'A password login to a key-only account (root, alpine by default; more via STACKDOG_SSHOLE_KEYONLY_USERS). That is what a successful SSHole login looks like in the logs',
-    'Alert and an offense per line. Five from one address within the ban window and the address is banned. Allowlists still apply.'
+    'Alert and an immediate ban on the first line. One login is already a foothold, and waiting for five would let the intruder switch the monitoring off. Allowlists and protected addresses still apply.'
   ]
 ] as const;
 
@@ -213,6 +213,12 @@ export default function SsholeCheckPage() {
               alpine by default, your own via{' '}
               <code>STACKDOG_SSHOLE_KEYONLY_USERS</code>. A password login to an unnamed
               key-only account passes it by.
+            </p>
+            <p>
+              The ban on these lines is immediate on purpose. That also means a password login
+              you did not expect gets the same treatment: if you or your tooling log into root
+              with a password, put those addresses in <code>STACKDOG_IP_BAN_ALLOWLIST</code>{' '}
+              first.
             </p>
             <p>
               One successful SSHole login is already a foothold. The ban stops repeat sessions

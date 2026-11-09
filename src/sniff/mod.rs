@@ -523,6 +523,11 @@ impl SniffOrchestrator {
                         container_id: source_container_id(source),
                         source_path: source_path(source, None),
                         sample_line: Some(anomaly.sample_line.clone()),
+                        // A password login to a key-only account is already a
+                        // foothold: waiting for five gives the intruder time to
+                        // switch the monitoring off. One line bans.
+                        immediate: anomaly.detector_id.as_deref()
+                            == Some(sshole::PASSWORD_LOGIN_DETECTOR_ID),
                     })
                     .await?;
             }
@@ -557,6 +562,7 @@ impl SniffOrchestrator {
                         container_id: source_container_id(source),
                         source_path: source_path(source, Some(entry)),
                         sample_line: Some(entry.line.clone()),
+                        immediate: false,
                     })
                     .await?;
             }
@@ -1713,14 +1719,77 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_sshole_password_logins_count_one_offense_per_line() {
+    async fn test_sshole_attack_is_detected_and_the_attacker_banned() {
+        // The whole defense chain against the observed SSHole attack
+        // (89.116.89.18 ran id, uname and hostname through non-interactive
+        // sessions after logging in with an oversized password).
+        //
+        // Fixtures are real: the apk stanza is Alpine 3.20's openssh
+        // 9.7_p1-r6, captured from a live container; the login lines are the
+        // session shape real sshd produced there (captured verbatim in the
+        // detector tests), with the client address set to the attacker from
+        // the public report. The exploit itself is not reproduced here — its
+        // log footprint is an ordinary password login.
         let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+
+        // 1. The exposed system: an apk database that predates the fix.
+        let rootfs = tempfile::tempdir().unwrap();
+        let apk = rootfs.path().join("lib/apk/db");
+        std::fs::create_dir_all(&apk).unwrap();
+        std::fs::write(
+            apk.join("installed"),
+            "P:openssh\nV:9.7_p1-r6\n\nP:openssh-server\nV:9.7_p1-r6\n\n",
+        )
+        .unwrap();
+        let version_anomalies = orchestrator
+            .detectors
+            .detect_sshole_anomalies(&[], rootfs.path().to_str());
+        assert_eq!(version_anomalies.len(), 1, "{version_anomalies:#?}");
+        assert_eq!(
+            version_anomalies[0].detector_id.as_deref(),
+            Some("vuln.sshole")
+        );
+        assert_eq!(version_anomalies[0].severity, AnomalySeverity::Critical);
+        assert!(version_anomalies[0].description.contains("9.7_p1-r6"));
+        // A version names no attacker: it must never reach the ban engine.
+        assert!(!should_auto_ban(&version_anomalies[0]));
+
+        // 2. The attack in the logs: three password sessions (three recon
+        // commands) and two failed attempts against accounts with real
+        // passwords.
+        let entries: Vec<reader::LogEntry> = [
+            "Accepted password for root from 89.116.89.18 port 28046 ssh2",
+            "Accepted password for root from 89.116.89.18 port 28048 ssh2",
+            "Accepted password for alpine from 89.116.89.18 port 28050 ssh2",
+            "Failed password for deploy from 89.116.89.18 port 28052 ssh2",
+            "Failed password for admin from 89.116.89.18 port 28054 ssh2",
+        ]
+        .into_iter()
+        .map(|line| reader::LogEntry {
+            source_id: "sshd".into(),
+            timestamp: Utc::now(),
+            line: line.into(),
+            metadata: std::collections::HashMap::new(),
+        })
+        .collect();
+
+        let detector_anomalies = orchestrator.detectors.detect_log_anomalies(&entries);
+        let logins: Vec<LogAnomaly> = detector_anomalies
+            .into_iter()
+            .filter(|anomaly| anomaly.detector_id.as_deref() == Some("ssh.password-login"))
+            .collect();
+        assert_eq!(logins.len(), 3, "{logins:#?}");
+        assert!(logins.iter().all(should_auto_ban));
+        assert!(logins[0].sample_line.contains("89.116.89.18"));
+
+        // 3. The ban engine: a login finding bans on the first offense (a
+        // foothold must not wait for five), so the attacker is out before
+        // the recon sessions finish.
         let engine = IpBanEngine::new(
             orchestrator.pool.clone(),
             IpBanConfig {
                 enabled: true,
-                // High enough that the test records offenses without blocking.
-                max_retries: 100,
+                max_retries: 5,
                 find_time_secs: 300,
                 ban_time_secs: 60,
                 unban_check_interval_secs: 60,
@@ -1730,18 +1799,55 @@ mod tests {
                 protect_local_ips: true,
             },
         );
-        // What a successful SSHole run leaves behind: password logins to an
-        // account that should never accept one, one line per session.
-        let entries: Vec<reader::LogEntry> = (0..5)
-            .map(|i| reader::LogEntry {
-                source_id: "sshd".into(),
-                timestamp: Utc::now(),
-                line: format!(
-                    "Nov  6 10:00:0{i} host sshd[12{i}]: Accepted password for root from 95.163.183.216 port 5123{i} ssh2"
-                ),
-                metadata: std::collections::HashMap::new(),
-            })
-            .collect();
+        let mut summary = make_summary("unused", AnomalySeverity::Critical);
+        summary.anomalies = logins;
+        orchestrator
+            .apply_ip_ban(&entries, &test_log_source(), &summary, &engine)
+            .await
+            .unwrap();
+
+        assert!(
+            active_block_for_ip(&orchestrator.pool, "89.116.89.18")
+                .unwrap()
+                .is_some(),
+            "the attacker must be banned on the first login finding"
+        );
+    }
+
+    #[actix_rt::test]
+    async fn test_one_password_login_bans_immediately() {
+        // One password login to a key-only account is already a foothold:
+        // waiting for five offenses would give the intruder time to switch
+        // the monitoring off. The first line bans — except for allowlisted
+        // and protected addresses, which stay untouched whatever the policy.
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                // The default threshold: irrelevant for this detector.
+                max_retries: 5,
+                find_time_secs: 300,
+                ban_time_secs: 60,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![("95.163.183.217".parse().unwrap(), 32)],
+                max_bans_per_minute: 0,
+                protect_local_ips: true,
+            },
+        );
+        let entries: Vec<reader::LogEntry> = [
+            "Nov  6 10:00:00 host sshd[123]: Accepted password for root from 95.163.183.216 port 51234 ssh2",
+            "Nov  6 10:00:01 host sshd[124]: Accepted password for root from 95.163.183.217 port 51236 ssh2",
+        ]
+        .into_iter()
+        .map(|line| reader::LogEntry {
+            source_id: "sshd".into(),
+            timestamp: Utc::now(),
+            line: line.into(),
+            metadata: std::collections::HashMap::new(),
+        })
+        .collect();
         let mut summary = make_summary("unused", AnomalySeverity::Critical);
         summary.anomalies = orchestrator
             .detectors
@@ -1749,19 +1855,25 @@ mod tests {
             .into_iter()
             .filter(|anomaly| anomaly.detector_id.as_deref() == Some("ssh.password-login"))
             .collect();
-        assert_eq!(summary.anomalies.len(), 5);
-        assert!(summary.anomalies.iter().all(should_auto_ban));
+        assert_eq!(summary.anomalies.len(), 2);
 
         orchestrator
             .apply_ip_ban(&[], &test_log_source(), &summary, &engine)
             .await
             .unwrap();
 
-        let since = Utc::now() - chrono::Duration::minutes(5);
-        let offenses =
-            find_recent_offenses(&orchestrator.pool, "95.163.183.216", "sniff", since).unwrap();
-        assert_eq!(offenses.len(), 1);
-        assert_eq!(offenses[0].offense_count, 5);
+        assert!(
+            active_block_for_ip(&orchestrator.pool, "95.163.183.216")
+                .unwrap()
+                .is_some(),
+            "a single login line must be enough to ban"
+        );
+        assert!(
+            active_block_for_ip(&orchestrator.pool, "95.163.183.217")
+                .unwrap()
+                .is_none(),
+            "allowlisted addresses must never be banned"
+        );
     }
 
     #[actix_rt::test]

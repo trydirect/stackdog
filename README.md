@@ -666,7 +666,7 @@ whose password field is `*`, such as root. Fixed in OpenSSH 10.6p2.
 | Finding | When | Action |
 |---|---|---|
 | `vuln.sshole` | an `openssh-server` build older than 10.6p2 in the apk package database, on the host or in a running container | Critical alert naming the version; upgrade to 10.6p2 (`10.6_p2` on Alpine) and restart sshd. Never bans: a version names no attacker |
-| `ssh.password-login` | a password login to a key-only account (root, alpine by default) | alert + an offense per line; five from one address within the ban window ban it. That login line is what a successful SSHole attack leaves behind |
+| `ssh.password-login` | a password login to a key-only account (root, alpine by default) | alert + an immediate ban on the first line (allowlists and protected addresses still apply). One login is already a foothold: waiting for five offenses would let the intruder switch the monitoring off |
 
 The version check reads apk databases only: musl is the affected half of the
 configuration, and the PAM flavor (`openssh-server-pam`) and glibc
