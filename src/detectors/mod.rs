@@ -10,6 +10,7 @@ mod integrity;
 mod ml;
 pub mod php2shell;
 pub mod php_shell;
+pub mod sshole;
 
 use std::collections::HashSet;
 
@@ -26,6 +27,7 @@ use self::php2shell::{Php2ShellAttemptDetector, PhpVersionMonitor, PhpWorkerCras
 use self::php_shell::{
     ContainerFilesystem, PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot,
 };
+use self::sshole::{SshPasswordLoginDetector, SshVersionMonitor};
 use crate::database::connection::DbPool;
 use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly};
 use crate::sniff::reader::LogEntry;
@@ -103,6 +105,7 @@ pub struct DetectorRegistry {
     docker_posture_monitor: DockerPostureMonitor,
     php_shell_scanner: PhpShellScanner,
     php_version_monitor: PhpVersionMonitor,
+    sshole_monitor: SshVersionMonitor,
 }
 
 impl DetectorRegistry {
@@ -115,6 +118,7 @@ impl DetectorRegistry {
             docker_posture_monitor: DockerPostureMonitor,
             php_shell_scanner: PhpShellScanner::new(),
             php_version_monitor: PhpVersionMonitor::new(),
+            sshole_monitor: SshVersionMonitor::new(),
         }
     }
 
@@ -147,6 +151,7 @@ impl DetectorRegistry {
         ));
         self.register(PhpWorkerCrashDetector);
         self.register(Php2ShellAttemptDetector);
+        self.register(SshPasswordLoginDetector::new());
     }
 
     pub fn detect_log_anomalies(&self, entries: &[LogEntry]) -> Vec<LogAnomaly> {
@@ -201,6 +206,18 @@ impl DetectorRegistry {
         host_root: Option<&str>,
     ) -> Vec<LogAnomaly> {
         self.php_version_monitor
+            .detect(containers, host_root)
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    pub fn detect_sshole_anomalies(
+        &self,
+        containers: &[ContainerFilesystem],
+        host_root: Option<&str>,
+    ) -> Vec<LogAnomaly> {
+        self.sshole_monitor
             .detect(containers, host_root)
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
