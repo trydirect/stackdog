@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- SSHole detection (CVE-2026-123158). `vuln.sshole` flags OpenSSH builds older
+  than 10.6p2 in the apk package database, on the host and in running
+  containers: that is the vulnerable class (musl, passwords checked without
+  PAM, Alpine's default). The PAM flavor and glibc distributions are not
+  affected and are not reported. `ssh.password-login` alerts on password
+  logins to key-only accounts (root, alpine by default,
+  `STACKDOG_SSHOLE_KEYONLY_USERS` extends the list) and feeds the ban engine:
+  that line is what a successful SSHole login leaves in the logs.
+  `STACKDOG_SSHOLE_ENABLED=false` turns both off.
+
 ## [0.2.9] - 2026-10-31
 
 ### Added

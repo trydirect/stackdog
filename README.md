@@ -657,6 +657,25 @@ exploit traffic. Limits:
 Crash lines come from php-fpm and Apache error logs too; add host logs such as
 `/var/log/php8.3-fpm.log`. Stackdog cannot patch PHP: upgrading is the fix.
 
+#### SSHole exposure (CVE-2026-123158)
+
+SSHole is an authentication bypass in OpenSSH on musl systems with PAM disabled
+(Alpine's default server): an oversized password logs the attacker into accounts
+whose password field is `*`, such as root. Fixed in OpenSSH 10.6p2.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.sshole` | an `openssh-server` build older than 10.6p2 in the apk package database, on the host or in a running container | Critical alert naming the version; upgrade to 10.6p2 (`10.6_p2` on Alpine) and restart sshd. Never bans: a version names no attacker |
+| `ssh.password-login` | a password login to a key-only account (root, alpine by default) | alert + an offense per line; five from one address within the ban window ban it. That login line is what a successful SSHole attack leaves behind |
+
+The version check reads apk databases only: musl is the affected half of the
+configuration, and the PAM flavor (`openssh-server-pam`) and glibc
+distributions are not affected by the CVE. The log half reads the auth and
+syslog sources the brute-force bans come from — on Alpine, sshd logs to
+`/var/log/messages`. Key-only accounts are `root` and `alpine`; add yours with
+`STACKDOG_SSHOLE_KEYONLY_USERS`. Stackdog cannot patch OpenSSH: upgrading is
+the fix.
+
 ---
 
 ## 📦 Installation

@@ -14,6 +14,7 @@ use crate::alerting::{notifications::NotificationConfig, AlertSeverity};
 use crate::database::connection::{create_pool, init_database, DbPool};
 use crate::database::repositories::log_sources as log_sources_repo;
 use crate::detectors::php_shell;
+use crate::detectors::sshole;
 use crate::detectors::DetectorRegistry;
 use crate::docker::DockerClient;
 use crate::ip_ban::{gate, IpBanConfig, IpBanEngine, OffenseInput};
@@ -80,6 +81,9 @@ impl SniffOrchestrator {
             let mut registry = DetectorRegistry::default();
             if !config.phpshell_enabled {
                 registry.remove_detector(php_shell::ACCESS_DETECTOR_ID);
+            }
+            if !config.sshole_enabled {
+                registry.remove_detector(sshole::PASSWORD_LOGIN_DETECTOR_ID);
             }
             registry
         };
@@ -190,7 +194,10 @@ impl SniffOrchestrator {
         let mut container_filesystems = Vec::new();
         match DockerClient::new().await {
             Ok(docker) => {
-                if self.config.phpshell_enabled || self.config.php_version_check_enabled {
+                if self.config.phpshell_enabled
+                    || self.config.php_version_check_enabled
+                    || self.config.sshole_enabled
+                {
                     match docker.list_container_filesystems().await {
                         Ok(filesystems) => container_filesystems = filesystems,
                         Err(err) => log::debug!("Skipping container PHP checks: {}", err),
@@ -249,6 +256,20 @@ impl SniffOrchestrator {
                 "php-version",
                 container_filesystems.len() + 1,
                 "PHP2Shell version check",
+                anomalies,
+            )
+            .await?;
+        }
+
+        if self.config.sshole_enabled {
+            let anomalies = self
+                .detectors
+                .detect_sshole_anomalies(&container_filesystems, self.config.host_root.as_deref());
+            self.report_detector_batch(
+                &mut result,
+                "sshole",
+                container_filesystems.len() + 1,
+                "SSHole version check",
                 anomalies,
             )
             .await?;
@@ -638,6 +659,7 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
                 | "web.webshell-probe"
                 | "web.php-shell-access"
                 | "web.php2shell-attempt"
+                | "ssh.password-login"
                 | "file.sensitive-access"
                 | "cloud.metadata-ssrf"
         ) {
@@ -645,10 +667,14 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         }
         // Alert-only by policy. Their descriptions carry file and URL paths,
         // and a shell named `webshell.php` would otherwise pass the phrase
-        // check below. The PHP2Shell findings name no client at all.
+        // check below. The PHP2Shell and SSHole findings name no client at all.
         if matches!(
             detector_id,
-            "php.shell-file" | "php.shell-request" | "vuln.php2shell" | "php.worker-crash"
+            "php.shell-file"
+                | "php.shell-request"
+                | "vuln.php2shell"
+                | "php.worker-crash"
+                | "vuln.sshole"
         ) {
             return false;
         }
@@ -1601,6 +1627,7 @@ mod tests {
             "php.shell-request",
             "vuln.php2shell",
             "php.worker-crash",
+            "vuln.sshole",
         ] {
             let anomaly = LogAnomaly {
                 description: "Request to a file flagged as a PHP shell: GET /webshell.php".into(),
@@ -1678,6 +1705,58 @@ mod tests {
             .unwrap();
 
         // One row per address; five lines count five times.
+        let since = Utc::now() - chrono::Duration::minutes(5);
+        let offenses =
+            find_recent_offenses(&orchestrator.pool, "95.163.183.216", "sniff", since).unwrap();
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(offenses[0].offense_count, 5);
+    }
+
+    #[actix_rt::test]
+    async fn test_sshole_password_logins_count_one_offense_per_line() {
+        let orchestrator = SniffOrchestrator::new(memory_sniff_config()).unwrap();
+        let engine = IpBanEngine::new(
+            orchestrator.pool.clone(),
+            IpBanConfig {
+                enabled: true,
+                // High enough that the test records offenses without blocking.
+                max_retries: 100,
+                find_time_secs: 300,
+                ban_time_secs: 60,
+                unban_check_interval_secs: 60,
+                trusted_proxy_ranges: vec![],
+                allowlist_ranges: vec![],
+                max_bans_per_minute: 0,
+                protect_local_ips: true,
+            },
+        );
+        // What a successful SSHole run leaves behind: password logins to an
+        // account that should never accept one, one line per session.
+        let entries: Vec<reader::LogEntry> = (0..5)
+            .map(|i| reader::LogEntry {
+                source_id: "sshd".into(),
+                timestamp: Utc::now(),
+                line: format!(
+                    "Nov  6 10:00:0{i} host sshd[12{i}]: Accepted password for root from 95.163.183.216 port 5123{i} ssh2"
+                ),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect();
+        let mut summary = make_summary("unused", AnomalySeverity::Critical);
+        summary.anomalies = orchestrator
+            .detectors
+            .detect_log_anomalies(&entries)
+            .into_iter()
+            .filter(|anomaly| anomaly.detector_id.as_deref() == Some("ssh.password-login"))
+            .collect();
+        assert_eq!(summary.anomalies.len(), 5);
+        assert!(summary.anomalies.iter().all(should_auto_ban));
+
+        orchestrator
+            .apply_ip_ban(&[], &test_log_source(), &summary, &engine)
+            .await
+            .unwrap();
+
         let since = Utc::now() - chrono::Duration::minutes(5);
         let offenses =
             find_recent_offenses(&orchestrator.pool, "95.163.183.216", "sniff", since).unwrap();

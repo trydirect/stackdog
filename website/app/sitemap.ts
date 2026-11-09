@@ -37,6 +37,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.9
     },
     {
+      url: `${siteUrl}/sshole-check`,
+      lastModified,
+      changeFrequency: 'weekly',
+      priority: 0.9
+    },
+    {
       url: `${siteUrl}/fail2ban-alternative`,
       lastModified,
       changeFrequency: 'weekly',

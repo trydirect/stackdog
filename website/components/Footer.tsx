@@ -87,6 +87,11 @@ export default function Footer(_: FooterProps) {
                 </Link>
               </li>
               <li>
+                <Link href="/sshole-check" className="hover:text-cyan-300">
+                  SSHole Version Check
+                </Link>
+              </li>
+              <li>
                 <Link href="/fail2ban-alternative" className="hover:text-cyan-300">
                   Fail2ban Alternative
                 </Link>

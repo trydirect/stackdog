@@ -97,6 +97,9 @@ pub struct SniffConfig {
     pub phpshell_enabled: bool,
     /// Flag PHP builds older than the PHP2Shell fixes, on the host and in containers
     pub php_version_check_enabled: bool,
+    /// Flag OpenSSH builds older than the SSHole fix on musl systems, and ban
+    /// password logins to key-only accounts
+    pub sshole_enabled: bool,
     /// Host directories to scan for PHP shells
     pub phpshell_paths: Vec<String>,
     /// Container name/image fragments that mark a PHP workload
@@ -305,6 +308,14 @@ impl SniffConfig {
                 })
                 .unwrap_or(true),
             php_version_check_enabled: env::var("STACKDOG_PHP_VERSION_CHECK_ENABLED")
+                .ok()
+                .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(true),
+            sshole_enabled: env::var("STACKDOG_SSHOLE_ENABLED")
                 .ok()
                 .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
                     "1" | "true" | "yes" | "on" => Some(true),
