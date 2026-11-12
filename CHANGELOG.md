@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Discord webhook notifications (`STACKDOG_DISCORD_WEBHOOK_URL`), routed exactly
+  like Slack: Critical, High and Medium alerts arrive as plain messages under
+  the webhook's own name and avatar, truncated to Discord's 2000 character
+  limit. The ban and detection findings flow through unchanged.
+- Telegram notifications (`STACKDOG_TELEGRAM_BOT_TOKEN` +
+  `STACKDOG_TELEGRAM_CHAT_ID`), routed like Slack and Discord for alerts only:
+  action notifications are deliberately not sent to Telegram. Messages are
+  plain text through the Bot API, truncated to Telegram's 4096 character limit.
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
