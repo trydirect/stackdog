@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Configuration is also read from `~/.config/stackdog/.env`
+  (`$XDG_CONFIG_HOME/stackdog/.env` when set), behind the working-directory
+  `.env`: the nearest file wins and real environment variables win over both.
+  A missing file is no longer a warning — every setting has a default.
+- `stackdog init` writes the starter config to that directory and never
+  overwrites an existing file (it holds credentials).
 - Discord webhook notifications (`STACKDOG_DISCORD_WEBHOOK_URL`), routed exactly
   like Slack: Critical, High and Medium alerts arrive as plain messages under
   the webhook's own name and avatar, truncated to Discord's 2000 character

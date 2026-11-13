@@ -32,13 +32,11 @@ use tracing_subscriber::FmtSubscriber;
 
 #[actix_rt::main]
 async fn main() -> io::Result<()> {
-    // Load environment
-    if let Err(err) = dotenvy::dotenv() {
-        eprintln!(
-            "Warning: could not load .env file ({}). Continuing with existing environment.",
-            err
-        );
-    }
+    // Parse CLI first, then load the environment: real variables always
+    // win (dotenvy never overrides them), then ./.env for project-local
+    // setups, then the service-style config in ~/.config/stackdog/.
+    let cli = Cli::parse();
+    load_environment(!matches!(cli.command, Some(Command::Init)));
 
     // Parse CLI arguments
     let cli = Cli::parse();
@@ -103,9 +101,60 @@ async fn main() -> io::Result<()> {
             cli::FirewallSubcommand::List => run_firewall_list().await,
             cli::FirewallSubcommand::Reconcile => run_firewall_reconcile().await,
         },
+        Some(Command::Init) => run_init(),
         // Default: serve (backward compatible)
         Some(Command::Serve) | None => run_serve().await,
     }
+}
+
+/// Where the service-style config lives: `$XDG_CONFIG_HOME/stackdog`,
+/// falling back to `~/.config/stackdog`.
+fn config_dir() -> Option<std::path::PathBuf> {
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(std::path::PathBuf::from(xdg).join("stackdog"));
+        }
+    }
+    env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config").join("stackdog"))
+}
+
+/// Load `.env` from the working directory and from [`config_dir`]. The
+/// nearest file wins: dotenvy never overrides a variable that is already
+/// set, and the working directory is loaded first. Real environment
+/// variables win over both. With `quiet`, a missing file is silent — used
+/// by `stackdog init`, which exists to create one.
+fn load_environment(quiet: bool) {
+    let local = dotenvy::dotenv();
+    let home = config_dir().map(|dir| dotenvy::from_path(dir.join(".env")));
+    if local.is_err() && home.as_ref().is_none_or(Result::is_err) && !quiet {
+        eprintln!(
+            "Note: no .env in the working directory or {:?}. Using the existing environment; every setting has a default. Run `stackdog init` to write a starter config.",
+            config_dir()
+        );
+    }
+}
+
+/// Write a starter config to [`config_dir`]. An existing file is never
+/// overwritten: it holds credentials.
+fn run_init() -> io::Result<()> {
+    let dir = config_dir().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine the config directory (no HOME or XDG_CONFIG_HOME)",
+        )
+    })?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(".env");
+    if path.exists() {
+        println!("{} already exists; not overwriting it.", path.display());
+        return Ok(());
+    }
+    std::fs::write(&path, include_str!("../.env.sample"))?;
+    println!("Wrote {}.", path.display());
+    println!(
+        "Edit it to set notification channels and log paths, then start stackdog again."
+    );
+    Ok(())
 }
 
 async fn run_serve() -> io::Result<()> {

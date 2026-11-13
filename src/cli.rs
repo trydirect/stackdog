@@ -37,6 +37,9 @@ pub enum Command {
 
     /// Inspect and repair the Stackdog firewall rules
     Firewall(FirewallCommand),
+
+    /// Write a starter config to ~/.config/stackdog/.env
+    Init,
 }
 
 #[derive(Args, Debug, Clone)]

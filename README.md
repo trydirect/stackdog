@@ -862,7 +862,7 @@ stackdog/
 # 1. Clone and setup
 git clone https://github.com/trydirect/stackdog
 cd stackdog
-cp .env.sample .env
+cp .env.sample .env      # or run `stackdog init` once built
 
 # 2. Build
 cargo build
@@ -890,6 +890,14 @@ sudo cargo test --lib -- firewall::
 bpftool version
 uname -r  # Should be 4.19+
 ```
+
+### Where the config lives
+
+`stackdog` reads settings from three places, nearest first: real environment
+variables, then `.env` in the working directory, then `~/.config/stackdog/.env`
+(`$XDG_CONFIG_HOME/stackdog/.env` when set). Every setting has a default, so
+the app runs with no config at all. `stackdog init` writes a starter file to
+the config directory and never overwrites an existing one.
 
 ---
 
