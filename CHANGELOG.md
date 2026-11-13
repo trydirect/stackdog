@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CVE watch (`vuln.cve-watch`): matches every package on the host and in
+  running containers against the public feeds. OSV answers "does this exact
+  version have known vulnerabilities" (Debian and Ubuntu versions server-side,
+  Alpine versions without the `-rN` package revision), CISA's KEV catalog says
+  which are exploited in the wild — those are Critical, the rest carry the
+  advisory's severity label. Alerts once per package and CVE, 50 per pass
+  worst first, caches answers for 24h. A match means a fix is missing, not
+  that a box is exploitable: alerts say to check the vendor's advisory.
+  `STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
 - Configuration is also read from `~/.config/stackdog/.env`
   (`$XDG_CONFIG_HOME/stackdog/.env` when set), behind the working-directory
   `.env`: the nearest file wins and real environment variables win over both.

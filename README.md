@@ -678,6 +678,30 @@ syslog sources the brute-force bans come from — on Alpine, sshd logs to
 `STACKDOG_SSHOLE_KEYONLY_USERS`. Stackdog cannot patch OpenSSH: upgrading is
 the fix.
 
+#### CVE watch (every new CVE, from the public feeds)
+
+The detectors above hardcode what they know. `vuln.cve-watch` asks the public
+databases instead, so a CVE published tonight is checked on the next refresh
+without a Stackdog release. Every package on the host and in running
+containers is matched against [OSV](https://osv.dev) (Debian and Ubuntu
+versions server-side; Alpine's without the `-rN` package revision), and the
+results are cross-referenced with CISA's KEV catalog: known-exploited findings
+are Critical, the rest carry the advisory's own severity label.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.cve-watch` | a package version that OSV reports vulnerabilities for, newly matched since the last alert | alert once per package and CVE, KEV entries first. Never bans: a version names no attacker |
+
+Each package is re-queried at least every 24 hours, which is what catches
+newly published CVEs; answers are cached in the database so a restart does not
+re-query everything. Alerts are capped at 50 per pass, worst first. Honest
+limits: a match says a fix is missing, not that a machine is exploitable —
+distributions backport fixes, and configuration-dependent CVEs do not survive
+being flattened into a version range, so treat findings as "check your
+vendor's advisory". Very fresh CVEs may not be in the feeds yet; the
+specialized detectors above cover the ones we know in detail.
+`STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
+
 ---
 
 ## 📦 Installation

@@ -5,6 +5,7 @@
 //! anomalies that flow through the existing sniff/reporting pipeline.
 
 pub mod audits;
+pub mod cve_watch;
 pub(crate) mod http_request;
 mod integrity;
 mod ml;
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub use self::audits::ContainerPosture;
 
 use self::audits::{ConfigAssessmentMonitor, DockerPostureMonitor, PackageInventoryMonitor};
+use self::cve_watch::CveWatchMonitor;
 use self::http_request::{extract_request, HttpRequest};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
@@ -222,6 +224,28 @@ impl DetectorRegistry {
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
             .collect()
+    }
+
+    /// Match the package inventory against public CVE feeds. The monitor does
+    /// blocking file and network work, so it runs on a blocking thread rather
+    /// than stalling the sniff runtime.
+    pub async fn detect_cve_anomalies(
+        &self,
+        pool: &DbPool,
+        containers: &[ContainerFilesystem],
+        host_root: Option<&str>,
+    ) -> Vec<LogAnomaly> {
+        let pool = pool.clone();
+        let containers = containers.to_vec();
+        let host_root = host_root.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            CveWatchMonitor::shared().detect(&pool, &containers, host_root.as_deref())
+        })
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|finding| finding.to_log_anomaly())
+        .collect()
     }
 
     pub fn detect_config_assessment_anomalies(&self, paths: &[String]) -> Result<Vec<LogAnomaly>> {

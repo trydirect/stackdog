@@ -197,6 +197,7 @@ impl SniffOrchestrator {
                 if self.config.phpshell_enabled
                     || self.config.php_version_check_enabled
                     || self.config.sshole_enabled
+                    || self.config.cve_watch_enabled
                 {
                     match docker.list_container_filesystems().await {
                         Ok(filesystems) => container_filesystems = filesystems,
@@ -270,6 +271,25 @@ impl SniffOrchestrator {
                 "sshole",
                 container_filesystems.len() + 1,
                 "SSHole version check",
+                anomalies,
+            )
+            .await?;
+        }
+
+        if self.config.cve_watch_enabled {
+            let anomalies = self
+                .detectors
+                .detect_cve_anomalies(
+                    &self.pool,
+                    &container_filesystems,
+                    self.config.host_root.as_deref(),
+                )
+                .await;
+            self.report_detector_batch(
+                &mut result,
+                "cve-watch",
+                container_filesystems.len() + 1,
+                "CVE watch",
                 anomalies,
             )
             .await?;
@@ -681,6 +701,7 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
                 | "vuln.php2shell"
                 | "php.worker-crash"
                 | "vuln.sshole"
+                | "vuln.cve-watch"
         ) {
             return false;
         }
