@@ -5,10 +5,15 @@ authors = ["Vasili Pascal <info@try.direct>"]
 edition = "2021"
 description = "Security platform for Docker containers and Linux servers"
 license = "MIT"
-repository = "https://github.com/vsilent/stackdog"
+repository = "https://github.com/trydirect/stackdog"
+homepage = "https://stackdog.app"
+documentation = "https://stackdog.app/docs"
 readme = "README.md"
 keywords = ["security", "docker", "containers", "ebpf", "firewall"]
 categories = ["security", "development-tools"]
+# The workspace root is the repo root, so keep the two frontend trees out of
+# the crate package: the published artifact is the server binary.
+exclude = ["/web/", "/website/", "/ebpf/"]
 
 [workspace]
 members = [
