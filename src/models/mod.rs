@@ -1,3 +1,5 @@
-pub mod response;
-pub mod user;
-pub mod user_token;
+//! Models module
+
+pub mod api;
+
+pub use api::*;

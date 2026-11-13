@@ -1,21 +1,21 @@
 # Roadmap
 
-## 03-2021
+## 03-2022
 
- * [ ] Implement tests 
+ * [ ] Implement tests
  * [ ] Implement base components
  * [ ] Implement plugin/extension subsystem
  * [ ] Implement Web UI
- 
-## 04-2021
+
+## 04-2022
  * [ ] Implement RESTful API (read-only)
  * [ ] Security testing
  * [ ] Beta release
 
-## 05-2021
+## 05-2022
 * [ ] Release v1.0
 
-## 08-2021
+## 08-2022
 * [ ] Release v1.1
 
 
@@ -37,12 +37,12 @@
   - * [ ] View container logs
   - * [ ] Container command
  * [ ] Task Manager
-  - * [ ] Scheduler 
- 
+  - * [ ] Scheduler
+
 ## Plugin/Extension subsystem:
  * [ ] IPtables firewall manager
  * [ ] Crontab Manager
- 
+
 ## RESTful API:
   - * [ ] Display status
 
@@ -50,4 +50,4 @@
 ## Web UI:
   * [ ] Docker manager
   * [ ] DNS indicator
-  
+

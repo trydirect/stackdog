@@ -1,0 +1,256 @@
+.threat-map {
+  container: threats / inline-size;
+  min-width: 0;
+  border: 1px solid #dde3eb;
+  border-radius: 12px;
+  background: #fff;
+  color: #172b45;
+}
+
+.threat-map .card-header {
+  background: #fff;
+  border-bottom: 1px solid #dde3eb;
+  border-radius: 12px 12px 0 0;
+  padding: 20px 24px;
+}
+
+.threat-map .card-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.threat-map .card-body {
+  padding: 24px;
+}
+
+.threat-map .threat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: end;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.threat-map .threat-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 1 1 280px;
+  max-width: 420px;
+  gap: 12px;
+}
+
+.threat-map .filter-group {
+  min-width: 0;
+}
+
+.threat-map .form-control {
+  max-width: 100%;
+}
+
+.threat-map .threat-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
+}
+
+.threat-map .summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.threat-map .summary-label {
+  font-size: 0.6875rem;
+  color: #526379;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.threat-map .summary-value {
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.threat-map .summary-value.increasing {
+  color: #b42318;
+  font-size: 1rem;
+  line-height: 1.8;
+  text-transform: capitalize;
+}
+
+.threat-map .summary-value.decreasing {
+  color: #047857;
+  font-size: 1rem;
+  line-height: 1.8;
+  text-transform: capitalize;
+}
+
+.threat-map .summary-value.stable {
+  color: #526379;
+  font-size: 1rem;
+  line-height: 1.8;
+  text-transform: capitalize;
+}
+
+.threat-map .charts-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.threat-map .chart-container {
+  min-width: 0;
+  padding-top: 20px;
+  border-top: 1px solid #e5eaf0;
+}
+
+.threat-map .chart-container.full-width {
+  grid-column: 1 / -1;
+}
+
+.threat-map .chart-container h5,
+
+.threat-map .recent-threats h5 {
+  margin: 0 0 16px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #33465e;
+}
+
+.threat-map .recharts-default-tooltip {
+  border: 1px solid #dde3eb !important;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  box-shadow: 0 4px 16px #172b4514;
+}
+
+/* Hidden tooltips can retain coordinates from before the sidebar resized. */
+.threat-map .recharts-tooltip-wrapper[style*='visibility: hidden'] {
+  display: none;
+}
+
+.threat-map .recharts-legend-item {
+  margin: 4px 8px !important;
+}
+
+.threat-map .recent-threats {
+  margin-top: 24px;
+}
+
+.threat-map .threat-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.threat-map .threat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 16px 0;
+  border-top: 1px solid #e5eaf0;
+}
+
+.threat-map .threat-info {
+  display: flex;
+  flex: 1 1 200px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.threat-map .threat-type {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.threat-map .threat-source {
+  color: #526379;
+  font-family: monospace;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.threat-map .threat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.threat-map .threat-score {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.threat-map .threat-time {
+  font-size: 0.75rem;
+  color: #526379;
+}
+
+.threat-map .threat-empty {
+  color: #526379;
+  font-size: 0.8125rem;
+}
+
+.threat-map .threat-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #33465e;
+  background: #edf1f6;
+}
+
+.threat-map .severity-critical {
+  color: #9f1239;
+  background: #ffe4e6;
+}
+
+.threat-map .severity-high {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.threat-map .severity-medium {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.threat-map .severity-low {
+  color: #065f46;
+  background: #d1fae5;
+}
+
+.threat-map .severity-info {
+  color: #1e40af;
+  background: #dbeafe;
+}
+
+@container threats (max-width: 700px) {
+
+  .threat-map .charts-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .threat-map .threat-info {
+    flex-basis: 100%;
+  }
+}
+
+@container threats (max-width: 400px) {
+
+  .threat-map .card-body {
+    padding: 16px;
+  }
+
+  .threat-map .threat-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

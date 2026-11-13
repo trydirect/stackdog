@@ -1,0 +1,70 @@
+.app-layout {
+  --sd-bg: #f4f6f9;
+  --sd-border: #dde3eb;
+  --sd-text: #172b45;
+  --sd-muted: #526379;
+  --sd-blue: #2457c5;
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+  background: var(--sd-bg);
+  color: var(--sd-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-layout .dashboard {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 1680px;
+  padding: 32px;
+}
+
+.app-layout [id] {
+  scroll-margin-top: 24px;
+}
+
+.app-layout :focus-visible {
+  outline: 3px solid #2457c5;
+  outline-offset: 3px;
+}
+
+.app-layout ::selection {
+  background: #dbe7ff;
+  color: #172b45;
+}
+
+.app-layout .form-label {
+  margin-bottom: 6px;
+  color: var(--sd-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.app-layout .form-select,
+.app-layout .form-control {
+  min-height: 40px;
+  border-color: #c4cedb;
+  border-radius: 6px;
+  color: var(--sd-text);
+  font-size: 0.875rem;
+}
+
+@media (max-width: 991.98px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .app-layout .dashboard {
+    padding: 24px;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .app-layout .dashboard {
+    padding: 20px 12px;
+  }
+}

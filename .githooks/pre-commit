@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+echo "🐕 Stackdog pre-commit: running cargo fmt..."
+cargo fmt --all -- --check || {
+    echo "❌ cargo fmt failed. Run 'cargo fmt --all' to fix."
+    exit 1
+}
+
+echo "🐕 Stackdog pre-commit: running cargo clippy..."
+cargo clippy 2>&1
+CLIPPY_EXIT=$?
+if [ $CLIPPY_EXIT -ne 0 ]; then
+    echo "❌ cargo clippy failed to compile. Fix errors before committing."
+    exit 1
+fi
+
+echo "✅ Pre-commit checks passed."

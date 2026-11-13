@@ -1,9 +1,0 @@
-version: '3'
-services:
-  stackdog:
-    container_name: backend
-    image: trydirect/stackdog
-    restart: always
-    ports:
-    - "5000:5000"
-    env_file: .env

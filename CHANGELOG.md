@@ -1,0 +1,467 @@
+# Changelog
+
+All notable changes to Stackdog Security will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- CVE watch (`vuln.cve-watch`): matches every package on the host and in
+  running containers against the public feeds. OSV answers "does this exact
+  version have known vulnerabilities" (Debian and Ubuntu versions server-side,
+  Alpine versions without the `-rN` package revision), CISA's KEV catalog says
+  which are exploited in the wild — those are Critical, the rest carry the
+  advisory's severity label. Alerts once per package and CVE, 50 per pass
+  worst first, caches answers for 24h. A match means a fix is missing, not
+  that a box is exploitable: alerts say to check the vendor's advisory.
+  `STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
+- Configuration is also read from `~/.config/stackdog/.env`
+  (`$XDG_CONFIG_HOME/stackdog/.env` when set), behind the working-directory
+  `.env`: the nearest file wins and real environment variables win over both.
+  A missing file is no longer a warning — every setting has a default.
+- `stackdog init` writes the starter config to that directory and never
+  overwrites an existing file (it holds credentials).
+- Discord webhook notifications (`STACKDOG_DISCORD_WEBHOOK_URL`), routed exactly
+  like Slack: Critical, High and Medium alerts arrive as plain messages under
+  the webhook's own name and avatar, truncated to Discord's 2000 character
+  limit. The ban and detection findings flow through unchanged.
+- Telegram notifications (`STACKDOG_TELEGRAM_BOT_TOKEN` +
+  `STACKDOG_TELEGRAM_CHAT_ID`), routed like Slack and Discord for alerts only:
+  action notifications are deliberately not sent to Telegram. Messages are
+  plain text through the Bot API, truncated to Telegram's 4096 character limit.
+
+## [0.3.0] - 2026-11-09
+
+### Added
+
+- SSHole detection (CVE-2026-123158). `vuln.sshole` flags OpenSSH builds older
+  than 10.6p2 in the apk package database, on the host and in running
+  containers: that is the vulnerable class (musl, passwords checked without
+  PAM, Alpine's default). The PAM flavor and glibc distributions are not
+  affected and are not reported. `ssh.password-login` alerts on password
+  logins to key-only accounts (root, alpine by default,
+  `STACKDOG_SSHOLE_KEYONLY_USERS` extends the list) and feeds the ban engine:
+  that line is what a successful SSHole login leaves in the logs. A single
+  line bans the address on the spot (allowlists and protected addresses
+  exempt): a foothold must not wait for the offense threshold.
+  `STACKDOG_SSHOLE_ENABLED=false` turns both off.
+
+## [0.2.9] - 2026-10-31
+
+### Added
+
+- `web.php2shell-attempt`: bans clients whose requests run PHP out of memory
+  before any script runs, the step every known PHP2Shell variant relies on.
+  Read from Apache error logs (`[client …] … Allowed memory size … in Unknown
+  on line 0`), nginx error logs in front of php-fpm (`upstream sent
+  unexpected FastCGI record … request: "POST …"`), and the public scanner's
+  `php2shell-…` User-Agent. Each line is one offense, so five in the ban
+  window ban the client in the same pass. Only the client and request are
+  kept from nginx lines: `server:` and `host:` can be this server's own
+  address.
+- The `vuln.php2shell` alert now names the interim workaround,
+  `session.upload_progress.enabled = 0`.
+
+## [0.2.8] - 2026-10-31
+
+### Added
+
+- PHP2Shell exposure check (CVE-2026-109618, CVE-2026-109619). Each sniff pass
+  reads the PHP version on the host and in running containers (package
+  database, and `PHP_VERSION` for official images) and alerts on builds older
+  than 8.2.35, 8.3.36, 8.4.27 or 8.5.12 (`vuln.php2shell`). Distribution
+  packages get a "check your vendor" alert instead, because backports keep the
+  old version number. `STACKDOG_PHP_VERSION_CHECK_ENABLED=false` turns it off.
+- `php.worker-crash`: an alert when php-fpm or Apache workers keep dying on
+  memory faults, which is what attempts against PHP memory bugs leave behind.
+  Neither finding bans.
+
+### Fixed
+
+- Scan findings (file integrity, PHP shell files, package and posture checks)
+  shared one dedup key per detector, so when a pass found several distinct
+  things, only the first alerted and the rest were dropped. They now key on
+  what they found; log findings still key on the detector alone.
+
+## [0.2.7] - 2026-10-31
+
+### Added
+
+- PHP shell detection. Each sniff pass scores the PHP files in host web roots
+  (`STACKDOG_PHPSHELL_PATHS`) and in the docroots of PHP containers for webshell
+  code, and alerts on new or changed files that score as one (`php.shell-file`).
+  Requests that drive a shell — any request to a flagged upload through an
+  `uploads/` URL, parameters sent to a flagged file that is not a common entry
+  point, a POST to PHP under an `uploads/` URL (PATH_INFO and `//`, `.`, `..`
+  resolved) — are banned like other detector findings (`web.php-shell-access`).
+  A plain visit to an infected page is an alert only (`php.shell-request`).
+  Running in Docker, mount the host read-only and set `STACKDOG_HOST_ROOT`.
+  Extra signatures load from JSON (`STACKDOG_PHPSHELL_SIGNATURES`).
+
+### Fixed
+
+- `web.webshell-probe` matched its indicators anywhere in a log line, so `c99`
+  inside a request id or token in stacker's agent request logs raised a
+  webshell alert and an offense. It now reads the request URL only: a
+  `cmd`/`exec`/`shell` parameter, a shell or downloader in the URL, or a path
+  segment named after c99/r57.
+
+## [0.2.6] - 2026-10-27
+
+### Fixed
+
+- **The AI `ban_ip` tool must name a confirmed attack.** It banned addresses
+  for "repeated connection attempts" — background internet noise the auto path
+  deliberately ignores. Weak reasons are now refused with a message telling the
+  model to report an alert instead, tool-driven bans respect the per-minute
+  ceiling (the CLI stays exempt), and the tool description says what counts as
+  a confirmed attack.
+- **Alerts say which host sent them.** The Slack "Instance" field comes from
+  `STACKDOG_NOTIFICATION_LABEL`, and now falls back to the machine hostname
+  when the label is unset — an unattributable alert is half an alert in a fleet.
+
+## [0.2.5] - 2026-10-26
+
+### Fixed
+
+- **Infrastructure addresses can no longer be banned.** Every ban path (log
+  sniffing, `stackdog ban-ip`, the AI `ban_ip` tool) now passes a gate that
+  refuses CIDR ranges (iptables accepts `-s 172.16.0.0/12` and drops a whole
+  Docker network), private and loopback addresses, `STACKDOG_IP_BAN_ALLOWLIST`
+  entries, and addresses of the host or its containers. The CLI and AI paths
+  used to skip all of these checks.
+- **Ban rules are tagged and reconciled.** Rules now carry a `stackdog` marker;
+  on start, rules with no database record are removed and recorded bans with no
+  rule are re-applied — a crash between the firewall write and the database
+  write used to strand a DROP rule nothing would ever remove.
+- **Expired bans are released in `stackdog sniff` too.** The expiry loop ran
+  only under `serve`; a sniff-only deployment banned permanently.
+- **`web.login-bruteforce` no longer fires on bare `401` lines.** Inter-service
+  auth noise in microservice stacks read as a brute-force attempt.
+- **Mail abuse guard requires SMTP evidence before quarantining.** The traffic
+  heuristic matches ordinary HTTP/JSON chatter; quarantine (disconnecting the
+  container from its networks) now also needs observed egress to ports
+  25/465/587. A match without it is an alert. `STACKDOG_MAIL_GUARD_REQUIRE_SMTP`
+  restores the old behaviour.
+- **nftables generic mutators actually apply.** `create_chain`, `delete_chain`,
+  `add_rule`, and `flush_chain` ran `nft -c` (check-only) and changed nothing.
+
+### Added
+
+- `stackdog unban <ip>` — release a ban and remove its firewall rules, even
+  when the database has no record of it (crash leftovers).
+- `stackdog unban --all` — release every ban and remove every Stackdog firewall
+  rule: the one command to restore connectivity after a wrong ban.
+- `stackdog firewall list` — show blocked addresses in the firewall and the
+  database side by side.
+- `stackdog firewall reconcile` — run the startup reconciliation on demand.
+- AI tool `unban_ip`, symmetric to `ban_ip`.
+- `STACKDOG_IP_BAN_PROTECT_LOCAL_IPS` (default `true`) — never ban addresses of
+  this host or its containers.
+
+## [0.2.2] - 2026-04-07
+
+### Fixed
+
+- **CLI startup robustness** — `.env` loading is now non-fatal.
+  - `stackdog --help` and other commands no longer panic when `.env` is missing or contains malformed lines.
+  - Stackdog now logs a warning and continues with existing environment variables.
+
+- **Installer release resolution** — `install.sh` now handles missing `/releases/latest` responses gracefully.
+  - Falls back to the most recent release entry when no stable "latest" release is available.
+  - Improves error messaging and updates install examples to use the `main` branch script URL.
+
+### Added
+
+- **Expanded detector framework** with additional log-driven detection coverage.
+  - Reverse shell, sensitive file access, cloud metadata / SSRF, exfiltration chain, and secret leakage detectors.
+  - file integrity monitoring with SQLite-backed baselines via `STACKDOG_FIM_PATHS`.
+  - configuration assessment via `STACKDOG_SCA_PATHS`.
+  - package inventory heuristics via `STACKDOG_PACKAGE_INVENTORY_PATHS`.
+  - Docker posture audits for privileged mode, host namespaces, dangerous capabilities, Docker socket mounts, and writable sensitive mounts.
+
+- **Improved syslog ingestion**
+  - RFC3164 and RFC5424 parsing in file-based log ingestion for cleaner timestamps and normalized message bodies.
+
+#### Log Sniffing & Analysis (`stackdog sniff`)
+- **CLI Subcommands** — Multi-mode binary with `stackdog serve` and `stackdog sniff`
+  - `--once` flag for single-pass mode
+  - `--consume` flag to archive logs (zstd) and purge originals
+  - `--sources` to add custom log paths
+  - `--ai-provider` to select AI backend (openai/candle)
+  - `--interval` for polling frequency
+  - `--output` for archive destination
+
+- **Log Source Discovery** — Automatic and manual log source management
+  - System logs (`/var/log/syslog`, `messages`, `auth.log`, etc.)
+  - Docker container logs via bollard API
+  - Custom file paths (CLI, env var, or REST API)
+  - Incremental read position tracking (byte offset persisted in DB)
+
+- **Log Readers** — Trait-based reader abstraction
+  - `FileLogReader` with byte-offset tracking and log rotation detection
+  - `DockerLogReader` using bollard streaming API
+  - `JournaldReader` (Linux-gated) for systemd journal
+
+- **AI-Powered Analysis** — Dual-backend log summarization
+  - `OpenAiAnalyzer` — works with any OpenAI-compatible API (OpenAI, Ollama, vLLM)
+  - `PatternAnalyzer` — local fallback with error/warning counting and spike detection
+  - Structured `LogSummary` with anomaly detection (`LogAnomaly`, severity levels)
+
+- **Log Consumer** — Archive and purge pipeline
+  - FNV hash-based deduplication
+  - zstd compression (level 3) for archived logs
+  - File truncation and Docker log purge
+  - `ConsumeResult` tracking (entries archived, duplicates skipped, bytes freed)
+
+- **Reporter** — Bridges log analysis to existing alert system
+  - Converts `LogAnomaly` → `Alert` using `AlertManager` infrastructure
+  - Routes notifications via `route_by_severity()` to configured channels
+  - Persists `LogSummary` records to database
+
+- **REST API Endpoints**
+  - `GET /api/logs/sources` — list discovered log sources
+  - `POST /api/logs/sources` — manually add a custom source
+  - `GET /api/logs/sources/{path}` — get source details
+  - `DELETE /api/logs/sources/{path}` — remove a source
+  - `GET /api/logs/summaries` — list AI-generated summaries (filterable by source)
+
+- **Database Tables** — `log_sources` and `log_summaries` with indexes
+
+#### Dependencies
+- `clap = "4"` (derive) — CLI argument parsing
+- `async-trait = "0.1"` — async trait support
+- `reqwest = "0.12"` (json) — HTTP client for AI APIs
+- `zstd = "0.13"` — log compression
+- `futures-util = "0.3"` — Docker log streaming
+
+### Changed
+
+- Refactored `main.rs` to dispatch `serve`/`sniff` subcommands via clap
+- Added `events`, `rules`, `alerting`, `models` modules to binary crate
+- Updated `.env.sample` with `STACKDOG_LOG_SOURCES`, `STACKDOG_AI_*` config vars
+- Version metadata updated to `0.2.2` across Cargo, the web package manifest, and current release documentation.
+
+### Testing
+
+- **80+ new tests** covering all sniff modules (TDD)
+  - Config: 12, Discovery: 14, Readers: 10, Analyzer: 16, Consumer: 13, Reporter: 5, Orchestrator: 3, API: 7
+
+### Planned
+
+- Web dashboard (React/TypeScript)
+- ML anomaly detection with Candle
+- Kubernetes support
+- Grafana integration
+- Package builds (deb, rpm)
+
+---
+
+## [0.2.0] - 2026-03-13
+
+### 🎉 Major Release - Security Platform Rewrite
+
+Complete repositioning from container management to security-focused platform.
+
+### Added
+
+#### Core Security Modules
+- **Event System** - Comprehensive security event types with validation
+  - SyscallEvent with builder pattern
+  - SecurityEvent enum (Syscall, Network, Container, Alert)
+  - Event validation (IP, port, message validation)
+  - Event streaming (batch, filter, iterator)
+
+- **Rule Engine** - Flexible rule evaluation system
+  - Rule trait with priority support
+  - Built-in rules (allowlist, blocklist, process execution, network, file access)
+  - Rule chaining and aggregation
+  - Detailed evaluation results
+
+- **Signature Detection** - Threat signature database
+  - 10+ built-in threat signatures
+  - Categories: CryptoMiner, ContainerEscape, NetworkScanner, PrivilegeEscalation
+  - Pattern matching engine
+  - Multi-event pattern detection
+
+- **Threat Scoring** - ML-ready scoring system
+  - Configurable scoring (base, multiplier, time-decay)
+  - Severity levels (Info, Low, Medium, High, Critical)
+  - Cumulative scoring
+  - Threshold-based alerting
+
+- **Alert System** - Comprehensive alerting
+  - Alert lifecycle management (New → Acknowledged → Resolved)
+  - Alert deduplication with time windows
+  - 4 notification channels (Console, Slack, Email, Webhook)
+  - Alert statistics and tracking
+
+- **Firewall Integration** - Automated response
+  - nftables backend (Linux)
+  - iptables fallback
+  - Container quarantine
+  - Automated response actions
+  - Response audit trail
+
+#### Infrastructure
+- **eBPF Support** - Syscall monitoring infrastructure (Linux)
+  - eBPF loader with aya-rs
+  - Kernel compatibility checking
+  - Event ring buffer
+  - Syscall monitor
+
+- **Event Enrichment** - Context enhancement
+  - Process information from /proc
+  - Container ID detection (Docker, Kubernetes, containerd)
+  - Timestamp normalization
+  - Process tree enrichment
+
+#### Documentation
+- Complete development plan (18 weeks)
+- Testing guide
+- Usage examples
+- API documentation
+- Contributing guidelines
+
+### Changed
+
+- **Project Focus** - From container management to security platform
+- **Architecture** - Modular, security-first design
+- **Dependencies** - Removed legacy web framework dependencies
+- **Codebase** - Complete rewrite following Clean Code principles
+
+### Removed
+
+- Legacy REST API controllers
+- Old authentication middleware
+- React/TypeScript frontend (moved to future phase)
+- Old database models and migrations
+- Unused utility modules
+
+### Technical Details
+
+#### Dependencies Added
+- `aya = "0.12"` - eBPF framework
+- `candle-core = "0.3"` - ML framework
+- `netlink-packet-route = "0.17"` - nftables
+- `bollard = "0.16"` - Docker API
+- `uuid = "1"` - UUID generation
+
+#### Dependencies Removed
+- Old actix-web 3.x (will be added back in Phase 4)
+- Legacy authentication libraries
+
+### Testing
+
+- **49+ unit tests** passing
+- Tests for all security modules
+- TDD approach adopted
+- Integration test framework
+
+### Documentation
+
+- `README.md` - Complete rewrite
+- `CONTRIBUTING.md` - Updated guidelines
+- `DEVELOPMENT.md` - 18-week plan
+- `TESTING.md` - Testing guide
+- `STATUS.md` - Implementation status
+- `examples/usage_examples.rs` - Working examples
+
+---
+
+## [0.1.0] - 2022-03-01
+
+### Initial Release
+
+**Note:** This was the original container management tool. Version 0.2.0 represents a complete repositioning to a security-focused platform.
+
+### Added
+
+- Basic container management UI
+- Docker integration
+- SQLite database
+- JWT authentication
+- React frontend scaffolding
+
+---
+
+## Versioning
+
+Stackdog Security uses [Semantic Versioning](https://semver.org/):
+
+- **MAJOR** version for incompatible changes
+- **MINOR** version for backwards-compatible features
+- **PATCH** version for backwards-compatible bug fixes
+
+### Version Format
+
+```
+MAJOR.MINOR.PATCH
+
+Examples:
+0.2.0 - Initial security platform release
+0.2.1 - Bug fixes
+0.3.0 - New features
+1.0.0 - Production release
+```
+
+---
+
+## Release Schedule
+
+| Version | Target Date | Focus |
+|---------|-------------|-------|
+| **0.2.x** | Q1 2026 | Security foundation |
+| **0.3.x** | Q2 2026 | ML & automation |
+| **0.4.x** | Q3 2026 | Web dashboard |
+| **1.0.0** | Q4 2026 | Production release |
+
+---
+
+## Migration Guide
+
+### From 0.1.0 to 0.2.0
+
+Version 0.2.0 is a complete rewrite. There is no direct migration path.
+
+**For existing users:**
+- Old container management features are deprecated
+- New security features are the focus
+- Web dashboard will be added in Phase 4 (0.4.x)
+
+**For new users:**
+- Start with 0.2.0
+- Follow [README.md](README.md) for setup
+- See [examples/usage_examples.rs](examples/usage_examples.rs) for usage
+
+---
+
+## Breaking Changes
+
+### Version 0.2.0
+
+- Complete API change
+- New module structure
+- Different configuration format
+- Legacy features removed
+
+---
+
+## Contributors
+
+This release was made possible by contributions from:
+
+- **Vasili Pascal** - Project lead
+- **Community contributors** - See GitHub for full list
+
+---
+
+## Links
+
+- **GitHub:** https://github.com/trydirect/stackdog
+- **Documentation:** See docs/ directory
+- **Issues:** https://github.com/trydirect/stackdog/issues
+- **Discussions:** https://github.com/trydirect/stackdog/discussions

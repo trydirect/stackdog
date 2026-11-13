@@ -1,104 +1,1034 @@
-![CI/CD](https://github.com/vsilent/stackdog/actions/workflows/docker.yml/badge.svg)
-![Security](https://github.com/vsilent/stackdog/actions/workflows/codacy-analysis.yml/badge.svg)
-[![Crates.io](https://img.shields.io/crates/v/stackdog.svg)](https://crates.io/crates/stackdog)
-[![Docs.rs](https://docs.rs/stackdog/badge.svg)](https://docs.rs/stackdog)
-![Docker Stars](https://img.shields.io/docker/stars/trydirect/stackdog.svg)
-![Docker Pulls](https://img.shields.io/docker/pulls/trydirect/stackdog.svg)
-[![Gitter chat](https://badges.gitter.im/stackdog/community.png)](https://gitter.im/stackdog/community)
+# Stackdog Security
 
+![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)
+![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey.svg)
 
-<p></p><p></p><p></p>
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/42473/109795596-c7a14f00-7c1f-11eb-8358-583d4008f42d.jpg">
+<img width="280" height="280" alt="STACKDOG" src="https://github.com/user-attachments/assets/0c8a9216-8315-4ef7-9b73-d96c40521ed1" />
 </p>
 
 
-**Server management tool written in Rust for fast and secure management of containerized applications**
+## 🛡️ Security platform for Docker Containers & Linux Servers
 
+**Stackdog Security** is a Rust-based security platform that provides real-time threat detection, AI-powered anomaly detection, and automated response for containerized applications.
 
-<p></p><p></p>
+### 🔥 Key Features
 
-## Table of contents
-- [Quick start](#quick-start)
-- [Request a feature](https://github.com/vsilent/stackdog/issues/new)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Versioning](#versioning)
-- [Community](#community)
-- [Creators](#creators)
-- [License](#license)
+- **📊 Real-time Monitoring** — eBPF-based syscall monitoring with minimal overhead (<5% CPU)
+- **🔍 Log Sniffing** — Discover, read, and AI-summarize logs from containers and system files
+- **🐘 PHP Shell Detection** — Finds webshells in host and container web roots and bans the clients driving them
+- **🧭 Detector Framework** — Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
+- **🤖 AI/ML Detection** — Candle-powered anomaly detection + OpenAI/Ollama log analysis
+- **🚨 Alert System** — Multi-channel notifications (Slack, Discord, Telegram, email, webhook)
+- **🔒 Automated Response** — nftables/iptables firewall, container quarantine
+- **📈 Threat Scoring** — Configurable scoring with time-decay
+- **🎯 Signature Detection** — 10+ built-in threat signatures
+- **📦 Log Archival** — Deduplicate and compress logs with zstd, optionally purge originals
 
+---
 
-### Quick start
+## 📖 Table of Contents
 
-This project is at early stage of development, see development [ROADMAP.md](ROADMAP.md)
+- [Upgrading](#-upgrading)
+- [Quick Start](#-quick-start)
+- [Architecture](#-architecture)
+- [Features](#-features)
+- [Installation](#-installation)
+- [Usage Examples](#-usage-examples)
+- [Documentation](#-documentation)
+- [Development](#-development)
+- [Contributing](#-contributing)
+- [License](#-license)
 
-### Setup development environment
+---
+
+## ⬆️ Upgrading
+
+Notes for anyone moving from **v0.2.4 or earlier**. Nothing here needs to be run
+by hand, but two changes alter behaviour you may be relying on.
+
+### IP banning is stricter about who it accuses
+
+Earlier versions could ban addresses that were merely present in a log the
+analyzer was reading:
+
+- a finding whose sample line named no address caused **every** address in that
+  batch to be banned;
+- descriptions containing `frequent access`, `targeting`, `scanning`,
+  `possible attack` or `rejected connection` counted as grounds for a ban;
+- an auth-log line naming both client and server banned both;
+- browser versions in User-Agent strings (`Chrome/122.0.0.0`) parsed as
+  addresses and were banned as `122.0.0.0`.
+
+Bans now follow only the evidence: the sample line, then the description. A
+finding that accuses nobody raises an alert and stops there.
+
+Three settings are worth reviewing after upgrading:
+
+| Variable | Default | Why |
+|---|---|---|
+| `STACKDOG_IP_BAN_ALLOWLIST` | empty | Addresses never banned. Put load balancers, health checkers and this host's own public address here — banning them takes the service down. |
+| `STACKDOG_TRUSTED_PROXY_RANGES` | RFC1918 only | A public-facing proxy is **not** covered by the defaults, so its own address is banned instead of the client behind it. Add it as `<ip>/32`. |
+| `STACKDOG_IP_BAN_MAX_PER_MINUTE` | `10` | Ceiling on blocks per minute. A burst is more often a misread log than a crowd of attackers. `0` disables it. |
+
+To ban only on deterministic detectors and never on analyzer prose, set
+`STACKDOG_IP_BAN_FROM_AI_FINDINGS=false`.
+
+### Infrastructure addresses can no longer be banned
+
+In a microservice stack the ban plane used to turn on the application itself:
+
+- a service calling its peers over published ports or a load balancer logged
+  the peer's address, and a wrong ban dropped it in `INPUT` **and** `FORWARD` —
+  the service lost its own components;
+- `stackdog ban-ip` and the AI `ban_ip` tool accepted any string, CIDR ranges
+  included, and skipped the allowlist — `iptables -s 172.16.0.0/12 -j DROP`
+  would take down a Docker network;
+- a crash between the firewall write and the database write left a DROP rule
+  nothing would ever remove, and there was no way to clear it.
+
+Every ban path now refuses addresses that belong to you: CIDR ranges, private
+and loopback addresses, allowlist entries, and the addresses of this host and
+its containers (`STACKDOG_IP_BAN_PROTECT_LOCAL_IPS`, on by default). Rules are
+tagged and reconciled against the database on every start.
+
+If the network is blocked and you need it back **now**:
+
+```bash
+stackdog firewall list          # what is blocking what
+stackdog unban <ip>             # release one address, rules or no rules
+stackdog unban --all            # remove every Stackdog rule, release every ban
+stackdog firewall reconcile     # drop orphans, restore missing rules
+```
+
+Two related changes: bare `401` lines no longer count as a brute-force attempt,
+and the mail abuse guard quarantines a container only when it is actually
+observing outbound SMTP (`STACKDOG_MAIL_GUARD_REQUIRE_SMTP`, on by default) —
+the traffic heuristic alone matches ordinary service chatter, and quarantine is
+a network disconnect that needs manual release.
+
+### The offense table is rewritten on first start
+
+`ip_offenses` held one row per detection with `offense_count` stuck at `1`, so
+the table grew with every hit and one ban left several rows behind — which is
+why a single expiry emitted several "Released IP ban" notifications.
+
+The first start after upgrading collapses each `(ip_address, source_type)` group
+into one row carrying the tally and the earliest sighting, keeping a live block
+over a released one, then enforces the layout with a unique index. It runs once,
+automatically, and is skipped on later starts.
+
+**Back up the database first** if its history matters to you:
+
+```bash
+docker exec <stackdog> sqlite3 /data/stackdog.db ".backup '/data/stackdog.pre-upgrade.db'"
+```
+
+### Stackdog no longer reads its own logs
+
+Running in Docker, it used to analyze its own output and report its own errors
+as findings. It now skips its own container. Detection works without
+configuration, but under `network_mode: host` the surest signal is a label:
+
+```yaml
+labels:
+  com.trydirect.stackdog.ignore: "true"
+```
+
+The same label excludes any other container you would rather not analyze.
+
+### The dashboard has its own image
+
+`trydirect/stackdog-ui:latest` is published alongside the backend. Pointing a
+dashboard service at `trydirect/stackdog:latest` starts a second copy of the
+backend instead, listening on 5000 while port 3000 maps to nothing.
+
+The API address is read from the environment at container start, so changing it
+is a restart rather than a rebuild:
+
+```yaml
+stackdog-ui:
+  image: trydirect/stackdog-ui:latest
+  environment:
+    STACKDOG_API_URL: http://<host>:5000/api
+    STACKDOG_WS_URL: ws://<host>:5000/ws
+  ports:
+    - "3000:80"
+```
+
+Build args named `REACT_APP_*` never reached the bundle in earlier versions, so
+any address configured that way was silently ignored.
+
+### Alerts can link back to the dashboard
+
+Set `STACKDOG_UI_URL` and every notification carries a link to the alert that
+fired. Left unset, notifications look as they did before.
+
+---
+
+## 🚀 Quick Start
+
+### Install with curl (Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash
+```
+
+Pin a specific version:
+```bash
+curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.3.0
+```
+
+If your repository has no published stable release yet, use `--version` explicitly.
+
+### Run as Binary
+
+```bash
+# Clone repository
+git clone https://github.com/trydirect/stackdog
+cd stackdog
+
+# Start the HTTP server (default)
+cargo run
+
+# Or explicitly
+cargo run -- serve
+```
+
+### Run with Docker
+
+Use the published container image for the quickest way to explore the API.
+If you are validating a fresh branch or waiting for Docker Hub to pick up the latest CI build,
+prefer the local-image flow below so you know you are running your current checkout:
+
+```bash
+docker volume create stackdog-data
+
+docker run --rm -it \
+  --name stackdog \
+  --network host \
+  --cap-add=NET_ADMIN \
+  -e APP_HOST=0.0.0.0 \
+  -e APP_PORT=5000 \
+  -e DATABASE_URL=/data/stackdog.db \
+  -v stackdog-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  trydirect/stackdog:latest
+```
+
+> **Note:** `--network host` and `--cap-add=NET_ADMIN` are required for IP banning (iptables/nftables) to work. Without them, firewall rules from inside the container cannot affect host traffic.
+
+Then open another shell and hit the API:
+
+```bash
+curl http://localhost:5000/api/security/status
+curl http://localhost:5000/api/threats
+curl http://localhost:5000/api/alerts
+```
+
+Mount the Docker socket when you want Docker-aware features such as container listing, live stats,
+mail abuse guard polling, Docker log discovery, and Docker-backed quarantine/release flows.
+
+If you do not want Stackdog to access the Docker daemon, disable the mail guard:
+
+```bash
+STACKDOG_MAIL_GUARD_ENABLED=false
+```
+
+To try log sniffing inside Docker against host log files, mount them read-only and run the
+`sniff` subcommand instead of the default HTTP server:
+
+```bash
+docker run --rm -it \
+  -e DATABASE_URL=/tmp/stackdog.db \
+  -v /var/log:/host-logs:ro \
+  trydirect/stackdog:latest \
+  sniff --once --sources /host-logs/auth.log
+```
+
+If you want to test your current checkout instead of the latest published image:
+
+```bash
+docker build -f docker/backend/Dockerfile -t stackdog-local .
+
+docker run --rm -it \
+  --name stackdog-local \
+  --network host \
+  --cap-add=NET_ADMIN \
+  -e APP_HOST=0.0.0.0 \
+  -e APP_PORT=5000 \
+  -e DATABASE_URL=/data/stackdog.db \
+  -v stackdog-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  stackdog-local
+```
+
+### Run backend + UI with Docker Compose
+
+To run `stackdog serve` and the web UI as two separate services from your current checkout:
+
+```bash
+docker compose -f docker-compose.app.yml up --build
+```
+
+This starts:
+
+- **API** at `http://localhost:5000`
+- **UI** at `http://localhost:3000`
+
+The compose stack uses:
+
+- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, mounts `/var/run/docker.sock`, uses `network_mode: host`, and adds `NET_ADMIN` capability for IP banning
+- `stackdog-ui` service — builds the React app and serves it with Nginx
+- `stackdog-data` volume — persists the SQLite database between restarts
+
+> **Prerequisite for IP banning:** The `network_mode: host` and `cap_add: NET_ADMIN` settings are required so that `iptables`/`nftables` rules applied inside the container affect the host's network stack. Without them, IP ban firewall rules cannot reach host traffic.
+
+To stop it:
+
+```bash
+docker compose -f docker-compose.app.yml down
+```
+
+### Log Sniffing
+
+```bash
+# Discover and analyze logs (one-shot)
+stackdog -- sniff --once
+
+# Continuous monitoring with AI analysis
+stackdog -- sniff --ai-provider openai
+
+# Use Ollama (local LLM)
+STACKDOG_AI_API_URL=http://localhost:11434/v1 cargo run -- sniff
+
+# Consume mode: archive to zstd + purge originals
+stackdog -- sniff --consume --output ./log-archive
+
+# Add custom log sources
+stackdog -- sniff --sources "/var/log/myapp.log,/opt/service/logs"
+```
+
+The built-in sniff pipeline now includes Rust-native detectors for:
+
+- web attack indicators such as SQL injection probes, path traversal probes, login brute force, and webshell-style requests
+- exfiltration-style indicators such as suspicious SMTP/attachment activity and large outbound transfer hints in logs
+- reverse shell behavior, sensitive file access, cloud metadata / SSRF access, exfiltration chains, and secret leakage in logs
+- Wazuh-inspired file integrity monitoring for explicit paths configured with `STACKDOG_FIM_PATHS=/etc/ssh/sshd_config,/app/.env`
+- Wazuh-inspired configuration assessment via `STACKDOG_SCA_PATHS`, package inventory heuristics via `STACKDOG_PACKAGE_INVENTORY_PATHS`, Docker posture audits, and improved RFC3164/RFC5424 syslog parsing
+
+### Use as Library
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+stackdog = "0.2"
+```
+
+Basic usage:
+
+```rust
+use stackdog::{RuleEngine, AlertManager, ThreatScorer};
+
+let mut engine = RuleEngine::new();
+let mut alerts = AlertManager::new()?;
+let scorer = ThreatScorer::new();
+
+// Process security events
+for event in events {
+    let score = scorer.calculate_score(&event);
+    if score.is_high_or_higher() {
+        alerts.generate_alert(...)?;
+    }
+}
+```
+
+### Docker Development
+
+```bash
+# Run the published image
+docker run --rm -it -p 5000:5000 trydirect/stackdog:latest
+
+# Or, for the most reliable test of your current code, build and run your checkout
+docker build -f docker/backend/Dockerfile -t stackdog-local .
+docker run --rm -it -p 5000:5000 stackdog-local
+
+# Or run backend + UI together
+docker compose -f docker-compose.app.yml up --build
+```
+
+---
+
+## 🏗️ Architecture
 
 ```
-cp .env.sample .env
-head -c16 /dev/urandom > src/secret.key
-docker-compose up
+┌─────────────────────────────────────────────────────────────────┐
+│                     Stackdog Security Core                      │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
+│  │  Collectors │  │   ML/AI     │  │   Response Engine       │  │
+│  │             │  │   Engine    │  │                         │  │
+│  │ • eBPF      │  │             │  │ • nftables/iptables     │  │
+│  │ • Auditd    │  │ • Anomaly   │  │ • Container quarantine  │  │
+│  │ • Docker    │  │   Detection │  │ • Auto-response         │  │
+│  │   Events    │  │ • Scoring   │  │ • Alerting              │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Log Sniffing                                             │  │
+│  │  • Auto-discovery (system logs, Docker, custom paths)     │  │
+│  │  • AI summarization (OpenAI/Ollama/Candle)                │  │
+│  │  • zstd compression, dedup, log purge                     │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Setup diesel cli for sqlite, run migrations
-```aidl
+### Components
 
-cargo install diesel_cli --no-default-features --features sqlite
-diesel setup
-diesel migration run
+| Component | Description | Status |
+|-----------|-------------|--------|
+| **Events** | Security event types & validation | ✅ Complete |
+| **Rules** | Rule engine & signature detection | ✅ Complete |
+| **Alerting** | Alert management & notifications | ✅ Complete |
+| **Firewall** | nftables/iptables integration | ✅ Complete |
+| **Collectors** | eBPF syscall monitoring | ✅ Infrastructure |
+| **Log Sniffing** | Log discovery, AI analysis, archival | ✅ Complete |
+| **ML** | Candle-based anomaly detection | ⏳ Planned |
 
+---
+
+## 🎯 Features
+
+### 1. Event Collection
+
+```rust
+use stackdog::{SyscallEvent, SyscallType};
+
+let event = SyscallEvent::builder()
+    .pid(1234)
+    .uid(1000)
+    .syscall_type(SyscallType::Execve)
+    .container_id(Some("abc123".to_string()))
+    .build();
 ```
 
-### Documentation
-Stackdogs's documentation, included into this repo, is built with Jekyll and
-publicly hosted on GitHub Pages at https://stackdog.io
+**Supported Events:**
+- Syscall events (execve, connect, openat, ptrace, etc.)
+- Network events
+- Container lifecycle events
+- Alert events
 
-### Contributing
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+### 2. Rule Engine
 
-### Versioning
-Stackdog is maintained under the [the Semantic Versioning guidelines](https://semver.org/).
+```rust
+use stackdog::RuleEngine;
+use stackdog::rules::builtin::{SyscallBlocklistRule, ProcessExecutionRule};
 
-## Community
-Get updates on Bootstrap's development and chat with the project maintainers and community members.
+let mut engine = RuleEngine::new();
+engine.register_rule(Box::new(SyscallBlocklistRule::new(
+    vec![SyscallType::Ptrace, SyscallType::Setuid]
+)));
 
-- Follow [@stackdog1 on Twitter](https://twitter.com/stackdog1)
-- Join [the official Gitter room](https://gitter.im/stackdog/community)
+let results = engine.evaluate(&event);
+```
 
-### Creators
-**Vasili Pascal**
-- <https://twitter.com/VasiliiPascal>
-- <https://github.com/vsilent>
+**Built-in Rules:**
+- Syscall allowlist/blocklist
+- Process execution monitoring
+- Network connection tracking
+- File access monitoring
 
-### Sponsors
-Support this project by becoming a sponsor.
+### 3. Signature Detection
 
-Your logo will show up in this README with a link to your website.
+```rust
+use stackdog::SignatureDatabase;
 
-[Become a sponsor!](https://opencollective.com/stackdog#sponsor)
+let db = SignatureDatabase::new();
+println!("Loaded {} signatures", db.signature_count());
 
-### Contributors
-This project exists thanks to all the people who contribute.
+let matches = db.detect(&event);
+for sig in matches {
+    println!("Threat: {} (Severity: {})", sig.name(), sig.severity());
+}
+```
 
-### Backers
-Thank you to all our backers! 🙏 [Become a backer](https://opencollective.com/stackdog#backer)
-<a href="https://opencollective.com/stackdog#backers" target="_blank"><img src="https://opencollective.com/stackdog/backers.svg?width=890" /></a>
+**Built-in Signatures (10+):**
+- 🪙 Crypto miner detection
+- 🏃 Container escape attempts
+- 🌐 Network scanners
+- 🔐 Privilege escalation
+- 📤 Data exfiltration
 
-### Inspired by
+### 4. Threat Scoring
 
-- [Portainer](https://github.com/portainer/portainer) - A lightweight management UI for managing your Docker hosts or Docker Swarm clusters by [@portainer](https://github.com/portainer)
-- [Seagull](https://github.com/tobegit3hub/seagull) - Friendly Web UI to monitor docker daemon. by [@tobegit3hub](https://github.com/tobegit3hub)
-- [Swarmpit](https://github.com/swarmpit/swarmpit) - Swarmpit provides simple and easy to use interface for your Docker Swarm cluster. You can manage your stacks, services, secrets, volumes, networks etc.
-- [Swirl](https://github.com/cuigh/swirl) - Swirl is a web management tool for Docker, focused on swarm cluster By [@cuigh](https://github.com/cuigh/)
-- [Yacht](https://github.com/SelfhostedPro/Yacht) :construction: - A Web UI for docker that focuses on templates and ease of use in order to make deployments as easy as possible. By [@SelfhostedPro](https://github.com/SelfhostedPro)
+```rust
+use stackdog::ThreatScorer;
 
-### Why another container management tool ?
-- Written in Rust
-- Better security
-- Better performance
-- Modular design
+let scorer = ThreatScorer::new();
+let score = scorer.calculate_score(&event);
 
-## License
-[MIT](LICENSE-MIT)
+if score.is_critical() {
+    println!("Critical threat detected! Score: {}", score.value());
+}
+```
+
+**Severity Levels:**
+- Info (0-19)
+- Low (20-39)
+- Medium (40-69)
+- High (70-89)
+- Critical (90-100)
+
+### 5. Alert System
+
+```rust
+use stackdog::AlertManager;
+
+let mut manager = AlertManager::new()?;
+
+let alert = manager.generate_alert(
+    AlertType::ThreatDetected,
+    AlertSeverity::High,
+    "Suspicious activity detected".to_string(),
+    Some(event),
+)?;
+
+manager.acknowledge_alert(&alert.id())?;
+```
+
+**Notification Channels:**
+- Console (logging)
+- Slack webhooks
+- Discord webhooks
+- Telegram bot (alerts only)
+- Email (SMTP)
+- Generic webhooks
+
+### 6. Firewall & Response
+
+```rust
+use stackdog::{QuarantineManager, ResponseAction, ResponseType};
+
+// Quarantine container
+let mut quarantine = QuarantineManager::new()?;
+quarantine.quarantine("container_abc123")?;
+
+// Automated response
+let action = ResponseAction::new(
+    ResponseType::BlockIP("192.168.1.100".to_string()),
+    "Block malicious IP".to_string(),
+);
+```
+
+**Response Actions:**
+- Block IP addresses
+- Block ports
+- Quarantine containers
+- Kill processes
+- Send alerts
+- Custom commands
+
+### 7. Log Sniffing & AI Analysis
+
+```bash
+# Discover all log sources and analyze with AI
+stackdog sniff --once --ai-provider openai
+
+# Continuous daemon with local Ollama
+stackdog sniff --interval 60 --ai-provider openai
+
+# Consume: archive (zstd) + purge originals to free disk
+stackdog sniff --consume --output ./archive
+
+# Add custom sources alongside auto-discovered ones
+stackdog sniff --sources "/app/logs/api.log,/app/logs/worker.log"
+```
+
+**Capabilities:**
+- 🔍 Auto-discovers system logs, Docker container logs, and custom paths
+- 🤖 AI summarization via OpenAI, Ollama, or local pattern analysis
+- 📦 Deduplicates and compresses logs with zstd
+- 🗑️ Optional `--consume` mode: archives then purges originals
+- 📊 Incremental reading — tracks byte offsets, never re-reads old entries
+- 🚨 Anomaly alerts routed to configured notification channels
+
+**REST API:**
+```bash
+# List discovered sources
+curl http://localhost:5000/api/logs/sources
+
+# Add a custom source
+curl -X POST http://localhost:5000/api/logs/sources \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/var/log/myapp.log", "name": "My App"}'
+
+# View AI summaries
+curl http://localhost:5000/api/logs/summaries?source_id=myapp
+```
+
+### 8. PHP Shell Detection
+
+Every sniff pass reads the PHP files in web roots and scores them for webshell
+code: request input reaching `eval`/`system`/`assert`, `eval` of decoded data,
+`preg_replace` with `/e`, request input called as a function, and markers of
+known families (c99, r57, WSO, b374k, p0wny, China Chopper). One keyword never
+flags a file — WordPress calls `base64_decode`, Composer calls `proc_open` — the
+score does. PHP in an upload directory, and PHP hidden in an image there, add to
+it.
+
+**Where it looks:**
+- host paths in `STACKDOG_PHPSHELL_PATHS`;
+- PHP containers, found on their own: by name or image
+  (`STACKDOG_PHPSHELL_CONTAINERS`), or by a mount at `/var/www`, `/srv`, `/app`
+  or `/usr/share/nginx/html`. Mounted docroots are read at their host source,
+  docroots baked into the image through the overlay `MergedDir`.
+
+Running in Docker, Stackdog reads both through a read-only mount of the host:
+
+```yaml
+environment:
+  STACKDOG_HOST_ROOT: /host
+  STACKDOG_PHPSHELL_PATHS: /var/www
+volumes:
+  - /:/host:ro
+```
+
+**What it does:**
+
+| Finding | When | Action |
+|---|---|---|
+| `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
+| `web.php-shell-access` | any request to a flagged upload whose URL goes through `uploads/`; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
+| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only, never a ban — banning visitors of an infected page would ban its audience |
+
+Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
+protected local addresses and the per-minute ceiling all apply. Stackdog never
+deletes or moves the file; removing it is your call.
+
+Add signatures without a rebuild by pointing `STACKDOG_PHPSHELL_SIGNATURES` at
+a JSON file:
+
+```json
+[{"id": "acme-shell", "description": "ACME shell marker",
+  "pattern": "acme_shell_v\\d", "weight": "strong"}]
+```
+
+#### PHP2Shell exposure (CVE-2026-109618, CVE-2026-109619)
+
+PHP2Shell is unauthenticated remote code execution in the PHP interpreter. The
+fix is upgrading PHP; Stackdog tells you where you still have to.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.php2shell` | a PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older | Critical alert for upstream builds (official `php` images, read from `PHP_VERSION`); Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number |
+| `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1–2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
+| `web.php2shell-attempt` | the exploit's out-of-memory step, with the client address: Apache `[client …] PHP Fatal error: Allowed memory size … in Unknown on line 0`; nginx `upstream sent unexpected FastCGI record … client: …, request: "POST …"` (php-fpm); or the public scanner's `php2shell-…` User-Agent | alert + an offense per line, so a client causing 5 within the ban window is banned in the pass that reads them |
+
+The version check reads `php8.x-common` (Debian, Ubuntu) and `php8x-common` or `php8x` (Alpine)
+from the package database on the host and inside each running container, and
+`PHP_VERSION` from container environments. RPM-based hosts are not covered.
+The version and crash findings name no client, so they never ban. Turn the
+version check off with `STACKDOG_PHP_VERSION_CHECK_ENABLED=false`.
+
+`web.php2shell-attempt` bans. Every known PHP2Shell variant pushes PHP past
+`memory_limit` with a multipart POST; when that happens while PHP is still
+parsing the request, the error says `in Unknown on line 0`. An application
+running out of memory names its script and line instead, and is never an
+attempt. The two log formats were reproduced against `php:8.3-apache` and
+`php:8.3-fpm` behind nginx with a benign oversized form POST, not taken from
+exploit traffic. Limits:
+
+- the exploit can succeed in a few requests, so a ban mostly stops repeats and
+  scanners, not a fast first attempt;
+- the web server error log must be read: Docker container logs are, host logs
+  such as `/var/log/apache2/error.log` and `/var/log/nginx/error.log` go in
+  `STACKDOG_LOG_SOURCES`;
+- behind a CDN or proxy, the error log must record the real client address;
+- the same lines have rare innocent causes. A user posting a giant form to a
+  PHP with a very low `memory_limit` hits the Apache rule (at the default
+  128M that takes a body over 128 MB, which `client_max_body_size` usually
+  stops first). A buggy extension crashing php-fpm on an upload hits the
+  nginx rule. Either way it takes 5 in 5 minutes from one address;
+- the scanner User-Agent comes from one report (Fastly, via Brandefense). If
+  the scanner changes it, that rule goes quiet; the two out-of-memory rules
+  do not depend on it.
+
+Crash lines come from php-fpm and Apache error logs too; add host logs such as
+`/var/log/php8.3-fpm.log`. Stackdog cannot patch PHP: upgrading is the fix.
+
+#### SSHole exposure (CVE-2026-123158)
+
+SSHole is an authentication bypass in OpenSSH on musl systems with PAM disabled
+(Alpine's default server): an oversized password logs the attacker into accounts
+whose password field is `*`, such as root. Fixed in OpenSSH 10.6p2.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.sshole` | an `openssh-server` build older than 10.6p2 in the apk package database, on the host or in a running container | Critical alert naming the version; upgrade to 10.6p2 (`10.6_p2` on Alpine) and restart sshd. Never bans: a version names no attacker |
+| `ssh.password-login` | a password login to a key-only account (root, alpine by default) | alert + an immediate ban on the first line (allowlists and protected addresses still apply). One login is already a foothold: waiting for five offenses would let the intruder switch the monitoring off |
+
+The version check reads apk databases only: musl is the affected half of the
+configuration, and the PAM flavor (`openssh-server-pam`) and glibc
+distributions are not affected by the CVE. The log half reads the auth and
+syslog sources the brute-force bans come from — on Alpine, sshd logs to
+`/var/log/messages`. Key-only accounts are `root` and `alpine`; add yours with
+`STACKDOG_SSHOLE_KEYONLY_USERS`. Stackdog cannot patch OpenSSH: upgrading is
+the fix.
+
+#### CVE watch (every new CVE, from the public feeds)
+
+The detectors above hardcode what they know. `vuln.cve-watch` asks the public
+databases instead, so a CVE published tonight is checked on the next refresh
+without a Stackdog release. Every package on the host and in running
+containers is matched against [OSV](https://osv.dev) (Debian and Ubuntu
+versions server-side; Alpine's without the `-rN` package revision), and the
+results are cross-referenced with CISA's KEV catalog: known-exploited findings
+are Critical, the rest carry the advisory's own severity label.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.cve-watch` | a package version that OSV reports vulnerabilities for, newly matched since the last alert | alert once per package and CVE, KEV entries first. Never bans: a version names no attacker |
+
+Each package is re-queried at least every 24 hours, which is what catches
+newly published CVEs; answers are cached in the database so a restart does not
+re-query everything. Alerts are capped at 50 per pass, worst first. Honest
+limits: a match says a fix is missing, not that a machine is exploitable —
+distributions backport fixes, and configuration-dependent CVEs do not survive
+being flattened into a version range, so treat findings as "check your
+vendor's advisory". Very fresh CVEs may not be in the feeds yet; the
+specialized detectors above cover the ones we know in detail.
+`STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
+
+---
+
+## 📦 Installation
+
+### Prerequisites
+
+- **Rust** 1.75+ ([install](https://rustup.rs/))
+- **SQLite3** + libsqlite3-dev
+- **Linux** kernel 4.19+ (for eBPF features)
+- **Clang/LLVM** (for eBPF compilation)
+
+### Install Dependencies
+
+**Ubuntu/Debian:**
+```bash
+apt-get install libsqlite3-dev libssl-dev clang llvm pkg-config
+```
+
+**macOS:**
+```bash
+brew install sqlite openssl llvm
+```
+
+**Fedora/RHEL:**
+```bash
+dnf install sqlite-devel openssl-devel clang llvm
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/trydirect/stackdog
+cd stackdog
+cargo build --release
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+cargo test --lib
+
+# Run specific module tests
+cargo test --lib -- events::
+cargo test --lib -- rules::
+cargo test --lib -- alerting::
+cargo test --lib -- sniff::
+```
+
+---
+
+## 💡 Usage Examples
+
+### Example 1: Detect Suspicious Syscalls
+
+```rust
+use stackdog::{RuleEngine, SyscallEvent, SyscallType};
+use stackdog::rules::builtin::SyscallBlocklistRule;
+
+let mut engine = RuleEngine::new();
+engine.register_rule(Box::new(SyscallBlocklistRule::new(
+    vec![SyscallType::Ptrace, SyscallType::Setuid]
+)));
+
+let event = SyscallEvent::new(
+    1234, 1000, SyscallType::Ptrace, Utc::now()
+);
+
+let results = engine.evaluate(&event);
+if results.iter().any(|r| r.is_match()) {
+    println!("⚠️ Suspicious syscall detected!");
+}
+```
+
+### Example 2: Container Quarantine
+
+```rust
+use stackdog::QuarantineManager;
+
+let mut quarantine = QuarantineManager::new()?;
+
+// Quarantine compromised container
+quarantine.quarantine("container_abc123")?;
+
+// Check quarantine status
+let state = quarantine.get_state("container_abc123");
+println!("Container state: {:?}", state);
+
+// Release after investigation
+quarantine.release("container_abc123")?;
+```
+
+### Example 3: Multi-Event Pattern Detection
+
+```rust
+use stackdog::{SignatureMatcher, PatternMatch, SyscallType};
+
+let mut matcher = SignatureMatcher::new();
+
+// Detect: execve followed by ptrace (suspicious)
+matcher.add_pattern(
+    PatternMatch::new()
+        .with_syscall(SyscallType::Execve)
+        .then_syscall(SyscallType::Ptrace)
+        .within_seconds(60)
+);
+
+let result = matcher.match_sequence(&events);
+if result.is_match() {
+    println!("⚠️ Suspicious pattern detected!");
+}
+```
+
+### More Examples
+
+See [`examples/usage_examples.rs`](examples/usage_examples.rs) for complete working examples.
+
+Run examples:
+```bash
+cargo run --example usage_examples
+```
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Complete development plan (18 weeks) |
+| [TESTING.md](TESTING.md) | Testing guide and infrastructure |
+| [TODO.md](TODO.md) | Task tracking and roadmap |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines |
+| [STATUS.md](STATUS.md) | Current implementation status |
+
+### API Documentation
+
+```bash
+# Generate docs
+cargo doc --open
+
+# View online (after release)
+# https://docs.rs/stackdog
+```
+
+---
+
+## 🛠️ Development
+
+### Project Structure
+
+```
+stackdog/
+├── src/
+│   ├── cli.rs           # Clap CLI (serve/sniff subcommands)
+│   ├── events/          # Event types & validation
+│   ├── rules/           # Rule engine & signatures
+│   ├── alerting/        # Alerts & notifications
+│   ├── firewall/        # nftables/iptables
+│   ├── collectors/      # eBPF collectors
+│   ├── sniff/           # Log sniffing & AI analysis
+│   │   ├── config.rs    # SniffConfig (env + CLI)
+│   │   ├── discovery.rs # Log source auto-discovery
+│   │   ├── reader.rs    # File/Docker/Journald readers
+│   │   ├── analyzer.rs  # AI summarization (OpenAI + pattern)
+│   │   ├── consumer.rs  # zstd compression, dedup, purge
+│   │   └── reporter.rs  # Alert routing
+│   ├── api/             # REST API endpoints
+│   ├── database/        # SQLite + repositories
+│   ├── ml/              # ML infrastructure
+│   └── config/          # Configuration
+├── examples/            # Usage examples
+├── tests/               # Integration tests
+├── benches/             # Performance benchmarks
+├── ebpf/                # eBPF programs
+└── docs/                # Documentation
+```
+
+### Development Workflow
+
+```bash
+# 1. Clone and setup
+git clone https://github.com/trydirect/stackdog
+cd stackdog
+cp .env.sample .env      # or run `stackdog init` once built
+
+# 2. Build
+cargo build
+
+# 3. Run tests
+cargo test --lib
+
+# 4. Run example
+cargo run --example usage_examples
+
+# 5. Check code quality
+cargo fmt --all -- --check
+cargo clippy --all
+```
+
+### Running on Linux
+
+For full eBPF and firewall functionality:
+
+```bash
+# Requires root for eBPF
+sudo cargo test --lib -- firewall::
+
+# Check eBPF support
+bpftool version
+uname -r  # Should be 4.19+
+```
+
+### Where the config lives
+
+`stackdog` reads settings from three places, nearest first: real environment
+variables, then `.env` in the working directory, then `~/.config/stackdog/.env`
+(`$XDG_CONFIG_HOME/stackdog/.env` when set). Every setting has a default, so
+the app runs with no config at all. `stackdog init` writes a starter file to
+the config directory and never overwrites an existing one.
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Quick Start for Contributors
+
+```bash
+# Fork and clone
+git clone https://github.com/YOUR_USERNAME/stackdog
+cd stackdog
+
+# Create branch
+git checkout -b feature/my-feature
+
+# Make changes, run tests
+cargo test --lib
+
+# Commit and push
+git commit -m "Add my feature"
+git push origin feature/my-feature
+```
+
+### Good First Issues
+
+Look for issues labeled:
+- 🟢 `good first issue` - Easy tasks for newcomers
+- 🟡 `help wanted` - Need community help
+- 🔵 `documentation` - Improve docs
+
+---
+
+## 📊 Project Status
+
+### Current Phase: Phase 2 - Detection & Response
+
+| Phase | Status | Progress |
+|-------|--------|----------|
+| **Phase 1: Foundation** | ✅ Complete | 100% |
+| **Phase 2: Detection & Response** | 🚧 In Progress | 60% |
+| **Phase 3: ML & Automation** | ⏳ Pending | 0% |
+| **Phase 4: Web Dashboard** | ⏳ Pending | 0% |
+
+### Completed Tasks
+
+- ✅ Project structure (TASK-001)
+- ✅ Event types (TASK-002)
+- ✅ eBPF infrastructure (TASK-003)
+- ✅ Event enrichment (TASK-004)
+- ✅ Rule engine (TASK-005)
+- ✅ Signature detection (TASK-006)
+- ✅ Alert system (TASK-007)
+- ✅ Firewall integration (TASK-008)
+- ✅ Log sniffing & AI analysis (TASK-009)
+
+### Upcoming Tasks
+
+- ⏳ ML anomaly detection (TASK-010)
+- ⏳ Web dashboard (TASK-011)
+- ⏳ Kubernetes support (BACKLOG)
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+```
+Copyright (c) 2026 Vasili Pascal
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software...
+```
+
+---
+
+## 🙏 Acknowledgments
+
+### Inspired By
+
+- [Falco](https://github.com/falcosecurity/falco) - Cloud-native runtime security
+- [Sysdig](https://github.com/draios/sysdig) - System visibility
+
+### Technologies
+
+- [aya-rs](https://aya-rs.dev/) - Rust eBPF framework
+- [Candle](https://github.com/huggingface/candle) - HuggingFace ML framework
+- [Actix-web](https://actix.rs/) - Rust web framework
+- [rusqlite](https://github.com/rusqlite/rusqlite) - SQLite bindings for Rust
+- [r2d2](https://github.com/sfackler/r2d2) - Connection pool
+
+---
+
+## 📬 Contact
+
+- **Project Lead:** Vasili Pascal
+- **Email:** info@try.direct
+- **X:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
+- **GitHub:** [trydirect/stackdog](https://github.com/trydirect/stackdog)
+
+---
+
+<p align="center">
+<strong>Built with ❤️ using Rust</strong>
+</p>

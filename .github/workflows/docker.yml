@@ -2,159 +2,133 @@ name: Docker CICD
 
 on:
   push:
-    branches:
-      - master
-      - testing
+    branches: [main, dev]
   pull_request:
-    branches:
-      - master
+    branches: [main, dev]
 
 jobs:
-  cicd-linux-docker:
-    name: Cargo and npm build
+  build:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
           components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
 
-      - name: Cache cargo registry
-        uses: actions/cache@v2.1.4
-        with:
-          path: ~/.cargo/registry
-          key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-registry-
-            docker-
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-      - name: Cache cargo index
-        uses: actions/cache@v2.1.4
-        with:
-          path: ~/.cargo/git
-          key: docker-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-index-
-            docker-
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Generate Secret Key
-        run: |
-          head -c16 /dev/urandom > src/secret.key
+        run: head -c16 /dev/urandom > src/secret.key
 
-      - name: Cache cargo build
-        uses: actions/cache@v2.1.4
-        with:
-          path: target
-          key: docker-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-build-
-            docker-
+      - name: Check
+        run: cargo check
 
-      - name: Cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
+      - name: Format check
+        run: cargo fmt --all -- --check
 
-      - name: Cargo test
-        if: ${{ always() }}
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+      - name: Clippy
+        run: cargo clippy -- -D warnings
 
-      - name: Rustfmt
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          components: rustfmt
-          command: fmt
-          args: --all -- --check
+      - name: Test
+        run: cargo test
 
-      - name: Rustfmt
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          components: clippy
-          command: clippy
-          args: -- -D warnings
+      - name: Build static release
+        env:
+          CARGO_TARGET_DIR: target-cross
+          STACKDOG_GIT_HASH: ${{ github.sha }}
+        run: cross build --release --target x86_64-unknown-linux-musl
 
-      - name: Run cargo build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release
-
-      - name: npm install, build, and test
+      - name: Build frontend
         working-directory: ./web
         run: |
-          npm install
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
           npm run build
-      #   npm test
 
-      - name: Archive production artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: dist-without-markdown
-          path: |
-            web/dist
-            !web/dist/**/*.md
-
-#      - name: Archive code coverage results
-#        uses: actions/upload-artifact@v2
-#        with:
-#          name: code-coverage-report
-#          path: output/test/code-coverage.html
-      - name: Display structure of downloaded files
-        run: ls -R web/dist
-
-      - name: Copy app files and zip
+      - name: Package app
         run: |
           mkdir -p app/stackdog/dist
-          cp target/release/stackdog app/stackdog
-          cp -a web/dist/. app/stackdog
+          cp target-cross/x86_64-unknown-linux-musl/release/stackdog app/stackdog/
+          cp -a web/dist/. app/stackdog/
           cp docker/prod/Dockerfile app/Dockerfile
-          cd app
-          touch .env
-          tar -czvf ../app.tar.gz .
-          cd ..
+          touch app/.env
+          tar -czf app.tar.gz -C app .
 
-      - name: Upload app archive for Docker job
-        uses: actions/upload-artifact@v2.2.2
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: artifact-linux-docker
+          name: app-archive
           path: app.tar.gz
+          retention-days: 1
 
-  cicd-docker:
-    name: CICD Docker
+  docker:
+    name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: cicd-linux-docker
+    needs: build
     steps:
-      - name: Download app archive
-        uses: actions/download-artifact@v2
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
         with:
-          name: artifact-linux-docker
+          name: app-archive
 
-      - name: Extract app archive
-        run: tar -zxvf app.tar.gz
+      - name: Extract archive
+        run: tar -xzf app.tar.gz
 
-      - name: Display structure of downloaded files
-        run: ls -R
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Docker build and publish
-        uses: docker/build-push-action@v1
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: trydirect/stackdog
-          add_git_labels: true
-          tag_with_ref: true
-          #no-cache: true
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            trydirect/stackdog:latest
+            trydirect/stackdog:${{ github.sha }}
+
+  docker-ui:
+    name: Dashboard Image Build & Push
+    runs-on: ubuntu-latest
+    # Independent of the Rust build: the dashboard is its own image, and there
+    # is no reason to wait on a cross-compile to publish it.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # No build args: the image is generic and reads its API address from the
+      # environment at container start.
+      - name: Build and push dashboard
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ui/Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            trydirect/stackdog-ui:latest
+            trydirect/stackdog-ui:${{ github.sha }}

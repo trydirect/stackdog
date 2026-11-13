@@ -1,63 +1,101 @@
 [package]
 name = "stackdog"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["Vasili Pascal <info@try.direct>"]
-edition = "2018"
+edition = "2021"
+description = "Security platform for Docker containers and Linux servers"
+license = "MIT"
+repository = "https://github.com/trydirect/stackdog"
+homepage = "https://stackdog.app"
+documentation = "https://stackdog.app/docs"
+readme = "README.md"
+keywords = ["security", "docker", "containers", "ebpf", "firewall"]
+categories = ["security", "development-tools"]
+# The workspace root is the repo root, so keep the two frontend trees out of
+# the crate package: the published artifact is the server binary.
+exclude = ["/web/", "/website/", "/ebpf/"]
 
-#[package.metadata.docs.rs]
-features = ["openssl", "rustls", "compress", "secure-cookies"]
+[workspace]
+members = [
+    ".",
+    "ebpf",
+]
 
 [dependencies]
-actix-web = { version = "3.0.0-beta.3", features=["rustls"] }
-actix-rt = "2.1.0"
-actix-service = "1.0.6"
-actix-cors = "0.3.0"
-actix-http = "2.1.0"
-actix = "0.10"
-log = "0.4.11"
-env_logger = "0.7.1"
-serde = "1.0.116"
-bigdecimal = "0.0.14"
-diesel_migrations = "1.4.0"
-serde_derive = "1.0.116"
-serde_json = "1.0.59"
-dotenv = "0.15.0"
-futures = "0.3.5"
-failure = "0.1.8"
-derive_more = "0.99.10"
-jsonwebtoken = "7.2.0"
-bcrypt = "0.8.2"
-actix-tls = "2.0.0"
-awc = { version = "2.0.0", default-features = false }
-open-ssl = { package = "openssl", version = "0.10", optional = true }
-rust-tls = { package = "rustls", version = "0.18.0", optional = true }
+# Core
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = "0.3.23"
+dotenvy = "0.15.7"
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+actix-rt = "2"
+actix-web = "4"
+actix-cors = "0.6"
+actix-web-actors = "4"
+actix = "0.13"
+async-trait = "0.1"
+
+# Database
+rusqlite = { version = "0.39", features = ["bundled"] }
+r2d2 = "0.8"
+
+# Docker
+bollard = "0.16"
+
+# HTTP client (for LLM API)
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+sha2 = "0.10"
+regex = "1"
+
+# Compression
+zstd = "0.13"
+
+# Stream utilities
+futures-util = "0.3"
+lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "builder", "smtp-transport"] }
+
+# eBPF (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "0.12"
+aya-obj = "0.2"
+
+# Firewall (Linux only)
+netlink-packet-route = "0.29"
+netlink-sys = "0.8"
+
+# ML (optional)
+candle-core = { version = "0.10", optional = true }
+candle-nn = { version = "0.3", optional = true }
 
 [features]
-# openssl
-openssl = ["actix-tls/openssl", "awc/openssl", "open-ssl"]
-# rustls
-rustls = ["actix-tls/rustls", "awc/rustls", "rust-tls"]
-# content-encoding support
-compress = ["actix-http/compress", "awc/compress"]
-# sessions feature
-secure-cookies = ["actix-http/secure-cookies"]
+default = []
+ml = ["candle-core", "candle-nn"]
+ebpf = []
 
-default = ["compress"]
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+tempfile = "3"
+actix-test = "0.1"
+awc = "3"
 
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
 
-[dependencies.chrono]
-version = "0.4.15"
-features = ["serde"]
+[[bench]]
+name = "throughput"
+harness = false
 
-[dependencies.uuid]
-version = "0.8.1"
-features = ["v4"]
-
-[dependencies.diesel]
-version = "1.4.6"
-features = ["sqlite", "r2d2", "chrono", "numeric"]
-
-[dev-dependencies.diesel]
-version = "1.4.6"
-features = ["r2d2", "chrono"]
-
+[[bench]]
+name = "latency"
+harness = false

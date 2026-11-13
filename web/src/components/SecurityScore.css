@@ -1,0 +1,77 @@
+.security-score-card {
+  border: 1px solid #dde3eb;
+  border-radius: 12px;
+  background: #fff;
+  height: 100%;
+  color: #172b45;
+}
+
+.security-score-card .card-body {
+  padding: 24px;
+}
+
+.security-score-card .card-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #526379;
+  margin-bottom: 16px;
+}
+
+.security-score-card .gauge-container {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.security-score-card .gauge {
+  position: relative;
+  width: 150px;
+  height: 75px;
+  overflow: hidden;
+}
+
+.security-score-card .gauge-background {
+  position: absolute;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background: conic-gradient(from 270deg, #b42318 0deg, #c2410c 60deg, #b7790b 120deg, #047857 180deg, transparent 180deg);
+}
+
+.security-score-card .gauge-fill {
+  position: absolute;
+  left: 73px;
+  bottom: 75px;
+  width: 4px;
+  height: 74px;
+  border-radius: 2px;
+  background: #172b45;
+  transform-origin: 50% 100%;
+}
+
+.security-score-card .gauge-cover {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  width: 114px;
+  height: 114px;
+  border-radius: 50%;
+  background: #fff;
+  padding-top: 14px;
+  text-align: center;
+}
+
+.security-score-card .gauge-value {
+  font-size: 2.25rem;
+  line-height: 1.2;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: #172b45;
+}
+
+.security-score-card .score-label {
+  text-align: center;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  margin-top: 8px;
+}

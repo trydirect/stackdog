@@ -34,3 +34,6 @@ Cargo.lock
 
 .idea
 *.db
+docs/tasks/
+web/node_modules/
+web/dist/
