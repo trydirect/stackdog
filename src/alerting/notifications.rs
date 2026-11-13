@@ -63,6 +63,9 @@ async fn resolve_default_slack_icon_url() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
     slack_webhook: Option<String>,
+    discord_webhook: Option<String>,
+    telegram_bot_token: Option<String>,
+    telegram_chat_id: Option<String>,
     ui_url: Option<String>,
     slack_username: Option<String>,
     slack_icon_url: Option<String>,
@@ -81,6 +84,9 @@ impl NotificationConfig {
     pub fn new() -> Self {
         Self {
             slack_webhook: None,
+            discord_webhook: None,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
             ui_url: None,
             slack_username: None,
             slack_icon_url: None,
@@ -99,6 +105,9 @@ impl NotificationConfig {
     pub fn from_env() -> Self {
         Self {
             slack_webhook: env::var("STACKDOG_SLACK_WEBHOOK_URL").ok(),
+            discord_webhook: env::var("STACKDOG_DISCORD_WEBHOOK_URL").ok(),
+            telegram_bot_token: env::var("STACKDOG_TELEGRAM_BOT_TOKEN").ok(),
+            telegram_chat_id: env::var("STACKDOG_TELEGRAM_CHAT_ID").ok(),
             ui_url: env::var("STACKDOG_UI_URL")
                 .ok()
                 .map(|url| url.trim().to_string())
@@ -136,6 +145,19 @@ impl NotificationConfig {
     /// Set Slack webhook
     pub fn with_slack_webhook(mut self, url: String) -> Self {
         self.slack_webhook = Some(url);
+        self
+    }
+
+    /// Set Discord webhook
+    pub fn with_discord_webhook(mut self, url: String) -> Self {
+        self.discord_webhook = Some(url);
+        self
+    }
+
+    /// Set Telegram bot credentials; alerts need both a token and a chat
+    pub fn with_telegram(mut self, bot_token: String, chat_id: String) -> Self {
+        self.telegram_bot_token = Some(bot_token);
+        self.telegram_chat_id = Some(chat_id);
         self
     }
 
@@ -214,6 +236,21 @@ impl NotificationConfig {
     /// Get Slack webhook
     pub fn slack_webhook(&self) -> Option<&str> {
         self.slack_webhook.as_deref()
+    }
+
+    /// Get Discord webhook
+    pub fn discord_webhook(&self) -> Option<&str> {
+        self.discord_webhook.as_deref()
+    }
+
+    /// Get Telegram bot token
+    pub fn telegram_bot_token(&self) -> Option<&str> {
+        self.telegram_bot_token.as_deref()
+    }
+
+    /// Get Telegram chat id
+    pub fn telegram_chat_id(&self) -> Option<&str> {
+        self.telegram_chat_id.as_deref()
     }
 
     /// Get the Slack display name, falling back to the Stackdog default
@@ -306,9 +343,12 @@ impl NotificationConfig {
     }
 
     fn configured_action_channels(&self) -> Vec<NotificationChannel> {
+        // Telegram is deliberately absent: it carries security alerts only,
+        // not action notifications.
         [
             NotificationChannel::Console,
             NotificationChannel::Slack,
+            NotificationChannel::Discord,
             NotificationChannel::Email,
             NotificationChannel::Webhook,
         ]
@@ -321,6 +361,10 @@ impl NotificationConfig {
         match channel {
             NotificationChannel::Console => true,
             NotificationChannel::Slack => self.slack_webhook.is_some(),
+            NotificationChannel::Discord => self.discord_webhook.is_some(),
+            NotificationChannel::Telegram => {
+                self.telegram_bot_token.is_some() && self.telegram_chat_id.is_some()
+            }
             NotificationChannel::Webhook => self.webhook_url.is_some(),
             NotificationChannel::Email => {
                 self.smtp_host.is_some()
@@ -397,6 +441,8 @@ fn is_action_alert(alert: &crate::database::models::Alert) -> bool {
 pub enum NotificationChannel {
     Console,
     Slack,
+    Discord,
+    Telegram,
     Email,
     Webhook,
 }
@@ -411,6 +457,8 @@ impl NotificationChannel {
         match self {
             NotificationChannel::Console => self.send_console(alert),
             NotificationChannel::Slack => self.send_slack(alert, config).await,
+            NotificationChannel::Discord => self.send_discord(alert, config).await,
+            NotificationChannel::Telegram => self.send_telegram(alert, config).await,
             NotificationChannel::Email => self.send_email(alert, config).await,
             NotificationChannel::Webhook => self.send_webhook(alert, config).await,
         }
@@ -476,6 +524,108 @@ impl NotificationChannel {
             Ok(NotificationResult::Failure(
                 "Slack webhook not configured".to_string(),
             ))
+        }
+    }
+
+    /// Send a Discord notification through an incoming webhook
+    async fn send_discord(
+        &self,
+        alert: &Alert,
+        config: &NotificationConfig,
+    ) -> Result<NotificationResult> {
+        if let Some(webhook_url) = config.discord_webhook() {
+            let payload = build_discord_message(alert, config);
+            log::debug!("Sending Discord notification to webhook");
+            log::trace!("Discord payload: {}", payload);
+
+            let client = reqwest::Client::new();
+            match client
+                .post(webhook_url)
+                .header("Content-Type", "application/json")
+                .body(payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        log::info!("Discord notification sent successfully");
+                        Ok(NotificationResult::Success("sent to Discord".to_string()))
+                    } else {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        log::warn!("Discord API returned {}: {}", status, body);
+                        Ok(NotificationResult::Failure(format!(
+                            "Discord returned {}: {}",
+                            status, body
+                        )))
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to send Discord notification: {}", e);
+                    Ok(NotificationResult::Failure(format!(
+                        "Discord request failed: {}",
+                        e
+                    )))
+                }
+            }
+        } else {
+            log::debug!("Discord webhook not configured, skipping");
+            Ok(NotificationResult::Failure(
+                "Discord webhook not configured".to_string(),
+            ))
+        }
+    }
+
+    /// Send a Telegram alert through the Bot API. Alerts only: action
+    /// notifications are deliberately not routed here.
+    async fn send_telegram(
+        &self,
+        alert: &Alert,
+        config: &NotificationConfig,
+    ) -> Result<NotificationResult> {
+        let (Some(token), Some(_chat_id)) =
+            (config.telegram_bot_token(), config.telegram_chat_id())
+        else {
+            log::debug!("Telegram bot token or chat id not configured, skipping");
+            return Ok(NotificationResult::Failure(
+                "Telegram bot token or chat id not configured".to_string(),
+            ));
+        };
+
+        let payload = build_telegram_message(alert, config);
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+        log::debug!("Sending Telegram notification");
+        log::trace!("Telegram payload: {}", payload);
+
+        let client = reqwest::Client::new();
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    log::info!("Telegram notification sent successfully");
+                    Ok(NotificationResult::Success("sent to Telegram".to_string()))
+                } else {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    log::warn!("Telegram API returned {}: {}", status, body);
+                    Ok(NotificationResult::Failure(format!(
+                        "Telegram returned {}: {}",
+                        status, body
+                    )))
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to send Telegram notification: {}", e);
+                Ok(NotificationResult::Failure(format!(
+                    "Telegram request failed: {}",
+                    e
+                )))
+            }
         }
     }
 
@@ -649,6 +799,8 @@ pub fn route_by_severity(severity: AlertSeverity) -> Vec<NotificationChannel> {
             vec![
                 NotificationChannel::Console,
                 NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
                 NotificationChannel::Email,
                 NotificationChannel::Webhook,
             ]
@@ -657,11 +809,18 @@ pub fn route_by_severity(severity: AlertSeverity) -> Vec<NotificationChannel> {
             vec![
                 NotificationChannel::Console,
                 NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
                 NotificationChannel::Webhook,
             ]
         }
         AlertSeverity::Medium => {
-            vec![NotificationChannel::Console, NotificationChannel::Slack]
+            vec![
+                NotificationChannel::Console,
+                NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
+            ]
         }
         AlertSeverity::Low => {
             vec![NotificationChannel::Console]
@@ -686,6 +845,75 @@ pub fn severity_to_slack_color(severity: AlertSeverity) -> &'static str {
 /// Build Slack message payload
 pub fn build_slack_message(alert: &Alert, config: &NotificationConfig) -> String {
     build_slack_message_with_icon(alert, config, config.slack_icon_url())
+}
+
+/// Discord allows 2000 characters per message; keep the whole alert readable
+/// rather than letting the API reject a long one.
+const DISCORD_CONTENT_LIMIT: usize = 2000;
+
+/// Build Discord webhook payload: a plain content message, since incoming
+/// webhooks already carry their own name and avatar.
+pub fn build_discord_message(alert: &Alert, config: &NotificationConfig) -> String {
+    let mut content = format!(
+        "**Stackdog Security Alert**\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n",
+        alert.alert_type(),
+        alert.severity(),
+        alert.status(),
+        alert.timestamp().to_rfc3339(),
+    );
+    if let Some(label) = config.notification_label() {
+        content.push_str(&format!("Instance: {label}\n"));
+    }
+    content.push_str(alert.message());
+    if let Some(url) = config.alert_url(alert.id()) {
+        content.push_str(&format!("\nDetails: {url}"));
+    }
+
+    let content = truncate_chars(&content, DISCORD_CONTENT_LIMIT);
+
+    serde_json::json!({ "content": content }).to_string()
+}
+
+/// Truncate on a character boundary so multi-byte text stays valid UTF-8.
+fn truncate_chars(value: &str, max: usize) -> &str {
+    if value.len() <= max {
+        return value;
+    }
+    let mut end = max;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// Telegram allows 4096 characters per message.
+const TELEGRAM_TEXT_LIMIT: usize = 4096;
+
+/// Build Telegram sendMessage payload: plain text without parse_mode, so
+/// message content can never break the request by looking like markup.
+pub fn build_telegram_message(alert: &Alert, config: &NotificationConfig) -> String {
+    let mut text = format!(
+        "Stackdog Security Alert\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n",
+        alert.alert_type(),
+        alert.severity(),
+        alert.status(),
+        alert.timestamp().to_rfc3339(),
+    );
+    if let Some(label) = config.notification_label() {
+        text.push_str(&format!("Instance: {label}\n"));
+    }
+    text.push_str(alert.message());
+    if let Some(url) = config.alert_url(alert.id()) {
+        text.push_str(&format!("\nDetails: {url}"));
+    }
+
+    let text = truncate_chars(&text, TELEGRAM_TEXT_LIMIT);
+
+    serde_json::json!({
+        "chat_id": config.telegram_chat_id(),
+        "text": text,
+    })
+    .to_string()
 }
 
 /// Build Slack message payload with an explicit avatar URL
@@ -1162,5 +1390,29 @@ mod tests {
         let channels = config.configured_channels_for_severity(AlertSeverity::Critical);
 
         assert!(channels.contains(&NotificationChannel::Email));
+    }
+
+    #[test]
+    fn test_telegram_needs_both_a_token_and_a_chat() {
+        let token_only = NotificationConfig {
+            telegram_bot_token: Some("123:abc".to_string()),
+            telegram_chat_id: None,
+            ..Default::default()
+        };
+        assert!(!token_only.supports_channel(&NotificationChannel::Telegram));
+
+        let chat_only = NotificationConfig {
+            telegram_bot_token: None,
+            telegram_chat_id: Some("-100123".to_string()),
+            ..Default::default()
+        };
+        assert!(!chat_only.supports_channel(&NotificationChannel::Telegram));
+
+        let both = NotificationConfig {
+            telegram_bot_token: Some("123:abc".to_string()),
+            telegram_chat_id: Some("-100123".to_string()),
+            ..Default::default()
+        };
+        assert!(both.supports_channel(&NotificationChannel::Telegram));
     }
 }

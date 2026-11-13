@@ -22,7 +22,7 @@
 - **🐘 PHP Shell Detection** — Finds webshells in host and container web roots and bans the clients driving them
 - **🧭 Detector Framework** — Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
 - **🤖 AI/ML Detection** — Candle-powered anomaly detection + OpenAI/Ollama log analysis
-- **🚨 Alert System** — Multi-channel notifications (Slack, email, webhook)
+- **🚨 Alert System** — Multi-channel notifications (Slack, Discord, Telegram, email, webhook)
 - **🔒 Automated Response** — nftables/iptables firewall, container quarantine
 - **📈 Threat Scoring** — Configurable scoring with time-decay
 - **🎯 Signature Detection** — 10+ built-in threat signatures
@@ -502,6 +502,8 @@ manager.acknowledge_alert(&alert.id())?;
 **Notification Channels:**
 - Console (logging)
 - Slack webhooks
+- Discord webhooks
+- Telegram bot (alerts only)
 - Email (SMTP)
 - Generic webhooks
 
