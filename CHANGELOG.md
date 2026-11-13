@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Configuration is also read from `~/.config/stackdog/.env`
+  (`$XDG_CONFIG_HOME/stackdog/.env` when set), behind the working-directory
+  `.env`: the nearest file wins and real environment variables win over both.
+  A missing file is no longer a warning — every setting has a default.
+- `stackdog init` writes the starter config to that directory and never
+  overwrites an existing file (it holds credentials).
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
