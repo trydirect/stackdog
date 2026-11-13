@@ -223,6 +223,31 @@ pub fn init_database(pool: &DbPool) -> Result<()> {
     )?;
 
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS cve_watch_cache (
+            ecosystem TEXT NOT NULL,
+            package TEXT NOT NULL,
+            version TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            cve_ids TEXT NOT NULL,
+            PRIMARY KEY (ecosystem, package, version)
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cve_watch_alerted (
+            owner TEXT NOT NULL,
+            ecosystem TEXT NOT NULL,
+            package TEXT NOT NULL,
+            version TEXT NOT NULL,
+            osv_id TEXT NOT NULL,
+            alerted_at TEXT NOT NULL,
+            PRIMARY KEY (owner, ecosystem, package, version, osv_id)
+        )",
+        [],
+    )?;
+
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS ip_offenses (
             id TEXT PRIMARY KEY,
             ip_address TEXT NOT NULL,
