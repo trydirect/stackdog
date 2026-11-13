@@ -112,7 +112,7 @@ const faqEntries = [
   {
     question: 'Which release do I need?',
     answer:
-      'v0.2.7 or later for PHP shell detection, v0.2.8 or later for the PHP2Shell version check, v0.3.0 or later for PHP2Shell attempt bans. The installer picks the latest release by default.'
+      'v0.2.7 or later for PHP shell detection, v0.2.8 or later for the PHP2Shell version check, v0.3.1 or later for PHP2Shell attempt bans. The installer picks the latest release by default.'
   }
 ];
 
