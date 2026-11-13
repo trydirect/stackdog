@@ -115,7 +115,11 @@ fn config_dir() -> Option<std::path::PathBuf> {
             return Some(std::path::PathBuf::from(xdg).join("stackdog"));
         }
     }
-    env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config").join("stackdog"))
+    env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".config")
+            .join("stackdog")
+    })
 }
 
 /// Load `.env` from the working directory and from [`config_dir`]. The
@@ -151,9 +155,7 @@ fn run_init() -> io::Result<()> {
     }
     std::fs::write(&path, include_str!("../.env.sample"))?;
     println!("Wrote {}.", path.display());
-    println!(
-        "Edit it to set notification channels and log paths, then start stackdog again."
-    );
+    println!("Edit it to set notification channels and log paths, then start stackdog again.");
     Ok(())
 }
 
