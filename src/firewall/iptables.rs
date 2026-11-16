@@ -289,10 +289,17 @@ impl IptablesBackend {
             .context("Failed to list iptables rules")?;
 
         if !output.status.success() {
-            anyhow::bail!(
-                "Failed to list rules: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A fresh box has no stackdog chain yet: nothing is banned,
+            // which is an empty list, not an error.
+            if stderr.contains("No chain/target/match by that name")
+                || stderr.contains("No chain matches")
+                || stderr.contains("does not exist")
+                || stderr.contains("No such file or directory")
+            {
+                return Ok(Vec::new());
+            }
+            anyhow::bail!("Failed to list rules: {}", stderr);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
