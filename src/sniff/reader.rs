@@ -21,6 +21,9 @@ pub struct LogEntry {
 }
 
 /// Trait for reading log entries from a source
+// async-trait expands to #[must_use] fns returning Result; newer clippy
+// flags that Result already implies must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LogReader: Send + Sync {
     /// Read new entries since the last read position

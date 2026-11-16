@@ -414,10 +414,13 @@ impl NfTablesBackend {
             .context("Failed to list nftables rules")?;
 
         if !output.status.success() {
-            anyhow::bail!(
-                "Failed to list rules: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A fresh box has no stackdog table or chain yet: nothing is
+            // banned, which is an empty list, not an error.
+            if stderr.contains("No such file or directory") || stderr.contains("does not exist") {
+                return Ok(Vec::new());
+            }
+            anyhow::bail!("Failed to list rules: {}", stderr);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
