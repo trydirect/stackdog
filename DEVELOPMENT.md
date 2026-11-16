@@ -1,7 +1,7 @@
 # Stackdog Security - Development Plan
 
 **Last Updated:** 2026-04-07  
-**Current Version:** 0.3.0  
+**Current Version:** 0.3.1  
 **Status:** Phase 2 In Progress
 
 ## Project Vision
@@ -560,7 +560,7 @@ cargo-deny = "0.14"
 |---------|-------------|----------|--------|
 | **v0.1.0** | 2022-03-01 | Initial container management | ✅ Released |
 | **v0.2.0** | 2026-03-13 | Security platform foundation | ✅ Complete |
-| **v0.3.0** | Week 10 | ML anomaly detection | 🚧 In Progress |
+| **v0.3.1** | Week 10 | ML anomaly detection | 🚧 In Progress |
 | **v0.4.0** | Week 12 | Alerting system | ⏳ Pending |
 | **v0.5.0** | Week 16 | Web dashboard | ⏳ Pending |
 | **v1.0.0** | Week 18 | Production release | ⏳ Pending |
