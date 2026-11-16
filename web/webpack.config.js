@@ -24,6 +24,10 @@ module.exports = {
         test: /\.css$/,
         use: ['style-loader', 'css-loader'],
       },
+      {
+        test: /\.(png|jpe?g|gif|webp|svg|ico)$/i,
+        type: 'asset',
+      },
     ],
   },
   plugins: [
@@ -38,7 +42,11 @@ module.exports = {
     }),
     new HtmlWebpackPlugin({
       templateContent:
-        '<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Stackdog</title></head><body><div id="root"></div></body></html>',
+        '<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Stackdog</title>' +
+        // Written by the container at start-up; absent in dev, where the
+        // build-time defaults apply instead.
+        '<script src="/config.js"></script>' +
+        '</head><body><div id="root"></div></body></html>',
     }),
   ],
   devServer: {

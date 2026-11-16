@@ -55,6 +55,11 @@ impl DockerClient {
     }
 
     /// Get container info by ID
+    ///
+    /// The name comes from the container's own name, not its hostname: under
+    /// `network_mode: host` the hostname is the host's, and otherwise Docker
+    /// defaults it to the short ID — so hostname never yields what `docker ps`
+    /// shows.
     pub async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo> {
         let inspect = self
             .client
@@ -62,14 +67,17 @@ impl DockerClient {
             .await
             .context("Failed to inspect container")?;
 
+        let name = container_display_name(
+            inspect.name.as_deref(),
+            inspect.config.as_ref().and_then(|c| c.hostname.as_deref()),
+            container_id,
+        );
         let config = inspect.config.unwrap_or_default();
         let state = inspect.state.unwrap_or_default();
 
         Ok(ContainerInfo {
             id: container_id.to_string(),
-            name: config
-                .hostname
-                .unwrap_or_else(|| container_id[..12].to_string()),
+            name,
             image: config.image.unwrap_or_else(|| "unknown".to_string()),
             status: if state.running.unwrap_or(false) {
                 "Running"
@@ -80,6 +88,7 @@ impl DockerClient {
             }
             .to_string(),
             created: state.started_at.unwrap_or_default(),
+            labels: config.labels.unwrap_or_default(),
             network_settings: inspect
                 .network_settings
                 .map(|ns| {
@@ -91,6 +100,123 @@ impl DockerClient {
                 })
                 .unwrap_or_default(),
         })
+    }
+
+    /// Get posture information by ID for detector-backed audits
+    pub async fn get_container_posture(
+        &self,
+        container_id: &str,
+    ) -> Result<crate::detectors::ContainerPosture> {
+        let inspect = self
+            .client
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .context("Failed to inspect container")?;
+
+        let config = inspect.config.unwrap_or_default();
+        let host_config = inspect.host_config.unwrap_or_default();
+
+        Ok(crate::detectors::ContainerPosture {
+            container_id: container_id.to_string(),
+            name: inspect
+                .name
+                .unwrap_or_else(|| container_id[..12].to_string())
+                .trim_start_matches('/')
+                .to_string(),
+            image: config.image.unwrap_or_else(|| "unknown".to_string()),
+            privileged: host_config.privileged.unwrap_or(false),
+            network_mode: host_config.network_mode.filter(|value| !value.is_empty()),
+            pid_mode: host_config.pid_mode.filter(|value| !value.is_empty()),
+            cap_add: host_config.cap_add.unwrap_or_default(),
+            mounts: host_config.binds.unwrap_or_default(),
+        })
+    }
+
+    /// Mounts and root filesystem of each running container, for the PHP
+    /// shell scanner to find docroots on the host.
+    pub async fn list_container_filesystems(
+        &self,
+    ) -> Result<Vec<crate::detectors::php_shell::ContainerFilesystem>> {
+        let containers = self
+            .client
+            .list_containers(None::<ListContainersOptions<String>>)
+            .await
+            .context("Failed to list containers for PHP shell scan")?;
+
+        let mut result = Vec::new();
+        for container in containers {
+            let Some(id) = container.id else {
+                continue;
+            };
+            let inspect = match self
+                .client
+                .inspect_container(&id, None::<InspectContainerOptions>)
+                .await
+            {
+                Ok(inspect) => inspect,
+                Err(err) => {
+                    log::debug!("Skipping container {} in PHP shell scan: {}", id, err);
+                    continue;
+                }
+            };
+
+            let mounts = inspect
+                .mounts
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|mount| Some((mount.source?, mount.destination?)))
+                .collect();
+            let merged_dir = inspect
+                .graph_driver
+                .and_then(|driver| driver.data.get("MergedDir").cloned());
+            let config = inspect.config.unwrap_or_default();
+            let php_version = config.env.unwrap_or_default().into_iter().find_map(|var| {
+                var.strip_prefix("PHP_VERSION=")
+                    .map(|version| version.trim().to_string())
+            });
+
+            result.push(crate::detectors::php_shell::ContainerFilesystem {
+                name: inspect
+                    .name
+                    .unwrap_or_else(|| id.chars().take(12).collect())
+                    .trim_start_matches('/')
+                    .to_string(),
+                image: config.image.unwrap_or_default(),
+                id,
+                mounts,
+                merged_dir,
+                php_version,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// List container posture information for detector-backed audits
+    pub async fn list_container_postures(
+        &self,
+        all: bool,
+    ) -> Result<Vec<crate::detectors::ContainerPosture>> {
+        let options: Option<ListContainersOptions<String>> = Some(ListContainersOptions {
+            all,
+            size: false,
+            ..Default::default()
+        });
+
+        let containers = self
+            .client
+            .list_containers(options)
+            .await
+            .context("Failed to list containers for posture audit")?;
+
+        let mut result = Vec::new();
+        for container in containers {
+            if let Some(id) = container.id {
+                result.push(self.get_container_posture(&id).await?);
+            }
+        }
+
+        Ok(result)
     }
 
     /// Quarantine a container (disconnect from all networks)
@@ -210,6 +336,26 @@ pub struct ContainerInfo {
     pub status: String,
     pub created: String,
     pub network_settings: HashMap<String, String>,
+    /// Docker labels, including any set by docker-compose
+    pub labels: HashMap<String, String>,
+}
+
+/// Pick the name to show for a container.
+///
+/// Docker returns the inspect name with a leading slash ("/redis"). Falls back
+/// to the hostname, then to the short ID, so there is always something to print.
+fn container_display_name(
+    inspect_name: Option<&str>,
+    hostname: Option<&str>,
+    container_id: &str,
+) -> String {
+    inspect_name
+        .map(|name| name.trim_start_matches('/'))
+        .filter(|name| !name.is_empty())
+        .or(hostname)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| container_id.chars().take(12).collect())
 }
 
 /// Container statistics
@@ -227,6 +373,33 @@ pub struct ContainerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_container_display_name_prefers_real_name() {
+        assert_eq!(
+            container_display_name(Some("/redis"), Some("0f3b46ca0c16"), "0f3b46ca0c16aaaa"),
+            "redis"
+        );
+    }
+
+    #[test]
+    fn test_container_display_name_falls_back_to_hostname_then_id() {
+        // No name from inspect: hostname is the next best thing.
+        assert_eq!(
+            container_display_name(None, Some("web-01"), "0f3b46ca0c16aaaa"),
+            "web-01"
+        );
+
+        // Neither available: short ID keeps the output usable.
+        assert_eq!(
+            container_display_name(None, None, "0f3b46ca0c16aaaa"),
+            "0f3b46ca0c16"
+        );
+        assert_eq!(
+            container_display_name(Some("/"), Some(""), "0f3b46ca0c16aaaa"),
+            "0f3b46ca0c16"
+        );
+    }
 
     #[actix_rt::test]
     async fn test_docker_client_creation() {

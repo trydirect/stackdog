@@ -169,5 +169,5 @@ When fixing bugs, ensure:
 ## Contact
 
 For bug-related questions:
-- **GitHub Issues:** https://github.com/vsilent/stackdog/issues
+- **GitHub Issues:** https://github.com/trydirect/stackdog/issues
 - **Gitter:** https://gitter.im/stackdog/community

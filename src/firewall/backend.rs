@@ -18,6 +18,13 @@ pub trait FirewallBackend: Send + Sync {
     /// Unblock an IP address
     fn unblock_ip(&self, ip: &str) -> Result<()>;
 
+    /// Addresses currently blocked by Stackdog rules.
+    ///
+    /// Only rules carrying the Stackdog marker are claimed: an untagged DROP
+    /// rule cannot be told apart from one an operator wrote, and removing those
+    /// on a hunch is how a firewall cleanup becomes an outage.
+    fn list_banned_ips(&self) -> Result<Vec<String>>;
+
     /// Block a port
     fn block_port(&self, port: u16) -> Result<()>;
 

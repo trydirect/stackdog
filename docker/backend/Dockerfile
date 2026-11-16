@@ -19,8 +19,11 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
+# nftables/iptables are required for IP banning: the host's binaries are not
+# reachable from here, since network_mode host shares the network namespace but
+# not the filesystem.
 RUN apt-get update && \
-    apt-get install --no-install-recommends -y ca-certificates sqlite3 && \
+    apt-get install --no-install-recommends -y ca-certificates sqlite3 nftables iptables && \
     rm -rf /var/lib/apt/lists/* && \
     mkdir -p /data
 

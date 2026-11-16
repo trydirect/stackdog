@@ -5,9 +5,16 @@
 
 use clap::{Args, Parser, Subcommand};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("STACKDOG_GIT_HASH"),
+    ")"
+);
+
 /// Stackdog Security — Docker & Linux server security platform
 #[derive(Parser, Debug)]
-#[command(name = "stackdog", version, about, long_about = None)]
+#[command(name = "stackdog", version = VERSION, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -21,6 +28,62 @@ pub enum Command {
 
     /// Sniff and analyze logs from Docker containers and system sources
     Sniff(Box<SniffCommand>),
+
+    /// Ban an IP address immediately
+    BanIp(BanIpCommand),
+
+    /// Release a ban and remove its firewall rules
+    Unban(UnbanCommand),
+
+    /// Inspect and repair the Stackdog firewall rules
+    Firewall(FirewallCommand),
+
+    /// Write a starter config to ~/.config/stackdog/.env
+    Init,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BanIpCommand {
+    /// IPv4 address to ban
+    pub ip_address: String,
+
+    /// Ban duration (e.g. "30m", "1h", "2h", "24h")
+    #[arg(long, default_value = "30m")]
+    pub duration: String,
+
+    /// Reason for the ban
+    #[arg(long, default_value = "manual ban")]
+    pub reason: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UnbanCommand {
+    /// IPv4 address to release
+    #[arg(required_unless_present = "all")]
+    pub ip_address: Option<String>,
+
+    /// Release every ban and remove every Stackdog firewall rule
+    #[arg(long)]
+    pub all: bool,
+
+    /// Reason for the release
+    #[arg(long, default_value = "manual unban")]
+    pub reason: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FirewallCommand {
+    #[command(subcommand)]
+    pub command: FirewallSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum FirewallSubcommand {
+    /// List the addresses the Stackdog firewall is blocking
+    List,
+
+    /// Reconcile firewall rules with the database (drop orphans, restore gaps)
+    Reconcile,
 }
 
 #[derive(Args, Debug, Clone)]

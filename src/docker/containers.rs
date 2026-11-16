@@ -1,6 +1,7 @@
 //! Container management
 
 use crate::alerting::alert::{AlertSeverity, AlertType};
+use crate::alerting::notifications::{dispatch_stored_alert, env_flag_enabled, NotificationConfig};
 use crate::database::models::{Alert, AlertMetadata};
 use crate::database::{create_alert, get_container_alert_summary, DbPool};
 use crate::docker::client::{ContainerInfo, DockerClient};
@@ -51,10 +52,13 @@ impl ContainerManager {
         .with_metadata(
             AlertMetadata::default()
                 .with_container_id(container_id)
+                .with_source("quarantine")
                 .with_reason(reason),
         );
 
-        let _ = create_alert(&self.pool, alert).await;
+        let stored_alert = create_alert(&self.pool, alert).await?;
+        self.notify_action_alert(&stored_alert, "container quarantine")
+            .await;
 
         log::info!("Container {} quarantined: {}", container_id, reason);
         Ok(())
@@ -67,8 +71,20 @@ impl ContainerManager {
             .release_container(container_id, "bridge")
             .await?;
 
-        // Update any quarantine alerts
-        // (In production, would query for specific alerts)
+        let alert = Alert::new(
+            AlertType::SystemEvent,
+            AlertSeverity::Info,
+            format!("Container {} released from quarantine", container_id),
+        )
+        .with_metadata(
+            AlertMetadata::default()
+                .with_container_id(container_id)
+                .with_source("quarantine")
+                .with_reason("Container released from quarantine"),
+        );
+        let stored_alert = create_alert(&self.pool, alert).await?;
+        self.notify_action_alert(&stored_alert, "container quarantine release")
+            .await;
 
         log::info!("Container {} released from quarantine", container_id);
         Ok(())
@@ -88,6 +104,17 @@ impl ContainerManager {
             threats: summary.active_threats,
             security_state: summary.security_state().to_string(),
         })
+    }
+
+    async fn notify_action_alert(&self, alert: &Alert, action_name: &str) {
+        if !env_flag_enabled("STACKDOG_NOTIFY_QUARANTINE_ACTIONS", true) {
+            return;
+        }
+
+        let config = NotificationConfig::from_env();
+        if let Err(err) = dispatch_stored_alert(alert, &config).await {
+            log::warn!("Failed to send {} notification: {}", action_name, err);
+        }
     }
 }
 

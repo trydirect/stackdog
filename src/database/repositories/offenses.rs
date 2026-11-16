@@ -107,24 +107,62 @@ fn map_row(row: &rusqlite::Row) -> Result<IpOffenseRecord, rusqlite::Error> {
     })
 }
 
-pub fn insert_offense(pool: &DbPool, offense: &NewIpOffense) -> Result<()> {
+/// Record one detection for `(ip_address, source_type)`.
+///
+/// One row per pair, with `offense_count` carrying the tally. The counter
+/// restarts when the previous activity fell outside `window_start`, or when the
+/// address had already served a ban — otherwise an address banned once would
+/// stay one detection away from being banned again forever.
+///
+/// Returns the offense count after recording.
+pub fn record_offense_occurrence(
+    pool: &DbPool,
+    offense: &NewIpOffense,
+    window_start: DateTime<Utc>,
+) -> Result<u32> {
     let conn = pool.get()?;
+    let window_start = window_start.to_rfc3339();
+    let seen_at = offense.first_seen.to_rfc3339();
+
     conn.execute(
         "INSERT INTO ip_offenses (
             id, ip_address, source_type, container_id, offense_count,
             first_seen, last_seen, blocked_until, status, reason, metadata
-         ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, NULL, 'Active', ?6, ?7)",
+         ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, NULL, 'Active', ?6, ?7)
+         ON CONFLICT(ip_address, source_type) DO UPDATE SET
+            offense_count = CASE
+                WHEN ip_offenses.status = 'Released' OR ip_offenses.last_seen < ?8 THEN 1
+                ELSE ip_offenses.offense_count + 1
+            END,
+            first_seen = CASE
+                WHEN ip_offenses.status = 'Released' OR ip_offenses.last_seen < ?8 THEN excluded.first_seen
+                ELSE ip_offenses.first_seen
+            END,
+            status = CASE WHEN ip_offenses.status = 'Released' THEN 'Active' ELSE ip_offenses.status END,
+            blocked_until = CASE WHEN ip_offenses.status = 'Released' THEN NULL ELSE ip_offenses.blocked_until END,
+            last_seen = excluded.last_seen,
+            container_id = excluded.container_id,
+            reason = excluded.reason,
+            metadata = excluded.metadata",
         params![
             offense.id,
             offense.ip_address,
             offense.source_type,
             offense.container_id,
-            offense.first_seen.to_rfc3339(),
+            seen_at,
             offense.reason,
             serialize_metadata(offense.metadata.as_ref())?,
+            window_start,
         ],
     )?;
-    Ok(())
+
+    let count: i64 = conn.query_row(
+        "SELECT offense_count FROM ip_offenses WHERE ip_address = ?1 AND source_type = ?2",
+        params![offense.ip_address, offense.source_type],
+        |row| row.get(0),
+    )?;
+
+    Ok(count.max(0) as u32)
 }
 
 pub fn find_recent_offenses(
@@ -149,6 +187,33 @@ pub fn find_recent_offenses(
         params![ip_address, source_type, since.to_rfc3339()],
         map_row,
     )?;
+    let mut offenses = Vec::new();
+    for row in rows {
+        offenses.push(row?);
+    }
+    Ok(offenses)
+}
+
+/// Recent offense rows for an address across every source type.
+///
+/// `find_recent_offenses` narrows to one source; this is for callers that want
+/// the whole picture for an address, such as the AI's `check_ip_status`.
+pub fn recent_offenses_for_ip(
+    pool: &DbPool,
+    ip_address: &str,
+    since: DateTime<Utc>,
+) -> Result<Vec<IpOffenseRecord>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            id, ip_address, source_type, container_id, offense_count,
+            first_seen, last_seen, blocked_until, status, reason, metadata
+         FROM ip_offenses
+         WHERE ip_address = ?1 AND last_seen >= ?2
+         ORDER BY last_seen DESC",
+    )?;
+
+    let rows = stmt.query_map(params![ip_address, since.to_rfc3339()], map_row)?;
     let mut offenses = Vec::new();
     for row in rows {
         offenses.push(row?);
@@ -212,6 +277,41 @@ pub fn expired_blocks(pool: &DbPool, now: DateTime<Utc>) -> Result<Vec<IpOffense
     Ok(offenses)
 }
 
+/// List offenses, newest first, optionally narrowed to one status.
+pub fn list_offenses(
+    pool: &DbPool,
+    status: Option<OffenseStatus>,
+    limit: usize,
+) -> Result<Vec<IpOffenseRecord>> {
+    let conn = pool.get()?;
+    let base = "SELECT
+            id, ip_address, source_type, container_id, offense_count,
+            first_seen, last_seen, blocked_until, status, reason, metadata
+         FROM ip_offenses";
+
+    let mut offenses = Vec::new();
+    match status {
+        Some(status) => {
+            let mut stmt = conn.prepare(&format!(
+                "{base} WHERE status = ?1 ORDER BY last_seen DESC LIMIT ?2"
+            ))?;
+            let rows = stmt.query_map(params![status.to_string(), limit as i64], map_row)?;
+            for row in rows {
+                offenses.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(&format!("{base} ORDER BY last_seen DESC LIMIT ?1"))?;
+            let rows = stmt.query_map(params![limit as i64], map_row)?;
+            for row in rows {
+                offenses.push(row?);
+            }
+        }
+    }
+
+    Ok(offenses)
+}
+
 pub fn mark_released(pool: &DbPool, offense_id: &str) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
@@ -232,7 +332,7 @@ mod tests {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
 
-        insert_offense(
+        record_offense_occurrence(
             &pool,
             &NewIpOffense {
                 id: "o1".into(),
@@ -246,6 +346,7 @@ mod tests {
                     sample_line: None,
                 }),
             },
+            Utc::now() - Duration::minutes(5),
         )
         .unwrap();
 
@@ -260,13 +361,110 @@ mod tests {
         assert_eq!(offenses[0].status, OffenseStatus::Active);
     }
 
+    fn detection(ip: &str, reason: &str) -> NewIpOffense {
+        NewIpOffense {
+            id: uuid::Uuid::new_v4().to_string(),
+            ip_address: ip.into(),
+            source_type: "sniff".into(),
+            container_id: None,
+            first_seen: Utc::now(),
+            reason: reason.into(),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_record_offense_occurrence_increments_single_row() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let window_start = Utc::now() - Duration::minutes(5);
+
+        for expected in 1..=4 {
+            let count =
+                record_offense_occurrence(&pool, &detection("192.0.2.30", "ssh"), window_start)
+                    .unwrap();
+            assert_eq!(count, expected);
+        }
+
+        let offenses = find_recent_offenses(&pool, "192.0.2.30", "sniff", window_start).unwrap();
+        assert_eq!(offenses.len(), 1, "the table must not grow per detection");
+        assert_eq!(offenses[0].offense_count, 4);
+    }
+
+    #[test]
+    fn test_record_offense_occurrence_restarts_outside_the_window() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+
+        record_offense_occurrence(
+            &pool,
+            &detection("192.0.2.31", "ssh"),
+            Utc::now() - Duration::minutes(5),
+        )
+        .unwrap();
+
+        // A window that starts in the future makes the stored activity stale.
+        let count = record_offense_occurrence(
+            &pool,
+            &detection("192.0.2.31", "ssh"),
+            Utc::now() + Duration::minutes(5),
+        )
+        .unwrap();
+        assert_eq!(count, 1, "the counter restarts once activity ages out");
+    }
+
+    #[test]
+    fn test_record_offense_occurrence_reactivates_a_released_row() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let now = Utc::now();
+        let window_start = now - Duration::minutes(5);
+
+        record_offense_occurrence(&pool, &detection("192.0.2.32", "ssh"), window_start).unwrap();
+        mark_blocked(&pool, "192.0.2.32", "sniff", now + Duration::minutes(5)).unwrap();
+        let blocked = active_block_for_ip(&pool, "192.0.2.32").unwrap().unwrap();
+        mark_released(&pool, &blocked.id).unwrap();
+
+        // A served ban starts the count over, rather than leaving the address
+        // one detection away from being banned again.
+        let count = record_offense_occurrence(&pool, &detection("192.0.2.32", "ssh"), window_start)
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let offenses = find_recent_offenses(&pool, "192.0.2.32", "sniff", window_start).unwrap();
+        assert_eq!(offenses[0].status, OffenseStatus::Active);
+        assert!(offenses[0].blocked_until.is_none());
+    }
+
+    #[test]
+    fn test_offenses_are_unique_per_ip_and_source() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let window_start = Utc::now() - Duration::minutes(5);
+
+        record_offense_occurrence(&pool, &detection("192.0.2.33", "ssh"), window_start).unwrap();
+        let mut other_source = detection("192.0.2.33", "ai");
+        other_source.source_type = "ai-tool".into();
+        record_offense_occurrence(&pool, &other_source, window_start).unwrap();
+
+        let conn = pool.get().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ip_offenses WHERE ip_address = ?1",
+                params!["192.0.2.33"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2, "different sources keep their own tally");
+    }
+
     #[test]
     fn test_mark_blocked_and_released() {
         let pool = create_pool(":memory:").unwrap();
         init_database(&pool).unwrap();
         let now = Utc::now();
 
-        insert_offense(
+        record_offense_occurrence(
             &pool,
             &NewIpOffense {
                 id: "o2".into(),
@@ -277,6 +475,7 @@ mod tests {
                 reason: "test".into(),
                 metadata: None,
             },
+            now - Duration::minutes(5),
         )
         .unwrap();
 

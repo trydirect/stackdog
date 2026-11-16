@@ -4,6 +4,8 @@
 //!
 //! Note: This module is only available on Linux with the ebpf feature enabled
 
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
+use anyhow::Context;
 use anyhow::Result;
 use std::collections::HashMap;
 

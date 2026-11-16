@@ -30,7 +30,7 @@ git clone https://github.com/YOUR_USERNAME/stackdog
 cd stackdog
 
 # Add upstream remote
-git remote add upstream https://github.com/vsilent/stackdog
+git remote add upstream https://github.com/trydirect/stackdog
 ```
 
 ### 2. Setup Development Environment
@@ -353,8 +353,8 @@ Update relevant documentation:
 ## Questions?
 
 - **General questions:** [Gitter](https://gitter.im/stackdog/community)
-- **Bug reports:** [GitHub Issues](https://github.com/vsilent/stackdog/issues)
-- **Feature requests:** [GitHub Discussions](https://github.com/vsilent/stackdog/discussions)
+- **Bug reports:** [GitHub Issues](https://github.com/trydirect/stackdog/issues)
+- **Feature requests:** [GitHub Discussions](https://github.com/trydirect/stackdog/discussions)
 
 ---
 

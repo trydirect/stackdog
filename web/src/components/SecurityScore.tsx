@@ -8,10 +8,10 @@ interface SecurityScoreProps {
 
 const SecurityScore: React.FC<SecurityScoreProps> = ({ score }) => {
   const getScoreColor = (score: number): string => {
-    if (score >= 80) return '#27ae60'; // Green
-    if (score >= 60) return '#f39c12'; // Orange
-    if (score >= 40) return '#e67e22'; // Dark Orange
-    return '#e74c3c'; // Red
+    if (score >= 80) return '#047857'; // Green
+    if (score >= 60) return '#92400e'; // Orange
+    if (score >= 40) return '#c2410c'; // Dark Orange
+    return '#b42318'; // Red
   };
 
   const getScoreLabel = (score: number): string => {
@@ -28,7 +28,7 @@ const SecurityScore: React.FC<SecurityScoreProps> = ({ score }) => {
       <Card.Body>
         <Card.Title>Security Score</Card.Title>
         <div className="gauge-container">
-          <div className="gauge">
+          <div className="gauge" role="meter" aria-label="Security Score" aria-valuenow={score} aria-valuemin={0} aria-valuemax={100}>
             <div className="gauge-background">
               <div className="gauge-fill" style={{ transform: `rotate(${rotation}deg)` }} />
             </div>

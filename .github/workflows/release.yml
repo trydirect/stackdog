@@ -36,12 +36,14 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build release binary
+        env:
+          CARGO_TARGET_DIR: target-cross
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/stackdog dist/stackdog
+          cp target-cross/${{ matrix.target }}/release/stackdog dist/stackdog
           cd dist
           tar czf ${{ matrix.artifact }}.tar.gz stackdog
           sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256

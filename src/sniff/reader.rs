@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -21,6 +21,9 @@ pub struct LogEntry {
 }
 
 /// Trait for reading log entries from a source
+// async-trait expands to #[must_use] fns returning Result; newer clippy
+// flags that Result already implies must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LogReader: Send + Sync {
     /// Read new entries since the last read position
@@ -82,12 +85,7 @@ impl FileLogReader {
             let decoded = String::from_utf8_lossy(&line);
             let trimmed = decoded.trim_end().to_string();
             if !trimmed.is_empty() {
-                entries.push(LogEntry {
-                    source_id: self.source_id.clone(),
-                    timestamp: Utc::now(),
-                    line: trimmed,
-                    metadata: HashMap::from([("source_path".into(), self.path.clone())]),
-                });
+                entries.push(parse_file_log_entry(&self.source_id, &self.path, &trimmed));
             }
             line.clear();
         }
@@ -101,6 +99,85 @@ impl FileLogReader {
         );
         Ok(entries)
     }
+}
+
+fn parse_file_log_entry(source_id: &str, source_path: &str, raw_line: &str) -> LogEntry {
+    let (timestamp, line, mut metadata) = parse_syslog_line(raw_line);
+    metadata.insert("source_path".into(), source_path.to_string());
+
+    LogEntry {
+        source_id: source_id.to_string(),
+        timestamp,
+        line,
+        metadata,
+    }
+}
+
+fn parse_syslog_line(raw_line: &str) -> (DateTime<Utc>, String, HashMap<String, String>) {
+    parse_rfc5424_syslog(raw_line)
+        .or_else(|| parse_rfc3164_syslog(raw_line))
+        .unwrap_or_else(|| (Utc::now(), raw_line.to_string(), HashMap::new()))
+}
+
+fn parse_rfc5424_syslog(
+    raw_line: &str,
+) -> Option<(DateTime<Utc>, String, HashMap<String, String>)> {
+    let line = raw_line.trim();
+    let rest = line.strip_prefix('<')?;
+    let pri_end = rest.find('>')?;
+    let after_pri = &rest[pri_end + 1..];
+    let fields: Vec<&str> = after_pri.splitn(8, ' ').collect();
+    if fields.len() < 8 {
+        return None;
+    }
+    if !fields[0].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
+    let timestamp = chrono::DateTime::parse_from_rfc3339(fields[1])
+        .ok()?
+        .with_timezone(&Utc);
+    let host = fields[2];
+    let app = fields[3];
+    let message = fields[7].trim();
+
+    let mut metadata = HashMap::new();
+    metadata.insert("syslog_host".into(), host.to_string());
+    metadata.insert("syslog_app".into(), app.to_string());
+    metadata.insert("syslog_format".into(), "rfc5424".into());
+
+    Some((timestamp, message.to_string(), metadata))
+}
+
+fn parse_rfc3164_syslog(
+    raw_line: &str,
+) -> Option<(DateTime<Utc>, String, HashMap<String, String>)> {
+    if raw_line.len() < 16 {
+        return None;
+    }
+
+    let timestamp_part = raw_line.get(..15)?;
+    let year = Utc::now().year();
+    let naive =
+        NaiveDateTime::parse_from_str(&format!("{} {}", timestamp_part, year), "%b %e %H:%M:%S %Y")
+            .ok()?;
+    let timestamp = DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc);
+
+    let remainder = raw_line.get(16..)?.trim_start();
+    let (host, message_part) = remainder.split_once(' ')?;
+    let (line, program) = match message_part.split_once(": ") {
+        Some((program, message)) => (message.to_string(), Some(program.to_string())),
+        None => (message_part.to_string(), None),
+    };
+
+    let mut metadata = HashMap::new();
+    metadata.insert("syslog_host".into(), host.to_string());
+    metadata.insert("syslog_format".into(), "rfc3164".into());
+    if let Some(program) = program {
+        metadata.insert("syslog_program".into(), program);
+    }
+
+    Some((timestamp, line, metadata))
 }
 
 #[async_trait]
@@ -433,6 +510,77 @@ mod tests {
         let mut reader = FileLogReader::new("meta".into(), path_str.clone(), 0);
         let entries = reader.read_new_entries().await.unwrap();
         assert_eq!(entries[0].metadata.get("source_path"), Some(&path_str));
+    }
+
+    #[tokio::test]
+    async fn test_file_log_reader_parses_rfc3164_syslog_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("syslog.log");
+        {
+            let mut f = File::create(&path).unwrap();
+            writeln!(
+                f,
+                "Apr  7 09:30:00 host sshd[123]: Failed password for root from 192.0.2.10"
+            )
+            .unwrap();
+        }
+
+        let mut reader = FileLogReader::new("syslog".into(), path.to_string_lossy().to_string(), 0);
+        let entries = reader.read_new_entries().await.unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].metadata.get("syslog_format").map(String::as_str),
+            Some("rfc3164")
+        );
+        assert_eq!(
+            entries[0].metadata.get("syslog_host").map(String::as_str),
+            Some("host")
+        );
+        assert_eq!(
+            entries[0]
+                .metadata
+                .get("syslog_program")
+                .map(String::as_str),
+            Some("sshd[123]")
+        );
+        assert!(entries[0].line.starts_with("Failed password for root"));
+    }
+
+    #[tokio::test]
+    async fn test_file_log_reader_parses_rfc5424_syslog_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("syslog5424.log");
+        {
+            let mut f = File::create(&path).unwrap();
+            writeln!(
+                f,
+                "<34>1 2026-04-07T09:30:00Z host sshd - - - Failed password for root from 192.0.2.10"
+            )
+            .unwrap();
+        }
+
+        let mut reader = FileLogReader::new("syslog".into(), path.to_string_lossy().to_string(), 0);
+        let entries = reader.read_new_entries().await.unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].metadata.get("syslog_format").map(String::as_str),
+            Some("rfc5424")
+        );
+        assert_eq!(
+            entries[0].metadata.get("syslog_host").map(String::as_str),
+            Some("host")
+        );
+        assert_eq!(
+            entries[0].metadata.get("syslog_app").map(String::as_str),
+            Some("sshd")
+        );
+        assert_eq!(entries[0].line, "Failed password for root from 192.0.2.10");
+        assert_eq!(
+            entries[0].timestamp.to_rfc3339(),
+            "2026-04-07T09:30:00+00:00"
+        );
     }
 
     #[test]

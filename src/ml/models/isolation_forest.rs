@@ -101,17 +101,19 @@ impl IsolationForestModel {
     }
 
     pub fn fit(&mut self, dataset: &[SecurityFeatures]) {
+        let rows: Vec<_> = dataset.iter().map(SecurityFeatures::as_vector).collect();
+        self.fit_arrays(&rows);
+    }
+
+    /// Fit the model from raw `[f64; 4]` feature arrays.
+    pub fn fit_arrays(&mut self, dataset: &[[f64; 4]]) {
         self.trees.clear();
         if dataset.is_empty() {
             self.sample_size = 0;
             return;
         }
 
-        let rows = dataset
-            .iter()
-            .map(SecurityFeatures::as_vector)
-            .collect::<Vec<_>>();
-
+        let rows = dataset.to_vec();
         self.sample_size = self.config.sample_size.min(rows.len()).max(1);
         let max_depth = self
             .config
@@ -130,15 +132,19 @@ impl IsolationForestModel {
     }
 
     pub fn score(&self, sample: &SecurityFeatures) -> f64 {
+        self.score_array(&sample.as_vector())
+    }
+
+    /// Score a raw `[f64; 4]` feature vector. Higher scores are more anomalous.
+    pub fn score_array(&self, vector: &[f64; 4]) -> f64 {
         if self.trees.is_empty() || self.sample_size <= 1 {
             return 0.0;
         }
 
-        let vector = sample.as_vector();
         let average_path = self
             .trees
             .iter()
-            .map(|tree| path_length(&tree.root, &vector, 0))
+            .map(|tree| path_length(&tree.root, vector, 0))
             .sum::<f64>()
             / self.trees.len() as f64;
 

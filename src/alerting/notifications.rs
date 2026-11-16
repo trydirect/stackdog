@@ -6,19 +6,77 @@ use anyhow::{Context, Result};
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use std::env;
 
 use crate::alerting::alert::{Alert, AlertSeverity};
 
+/// Display name used on Slack messages unless overridden
+const DEFAULT_SLACK_USERNAME: &str = "Stackdog";
+
+/// Avatar used on Slack messages unless overridden
+const DEFAULT_SLACK_ICON_URL: &str = "https://stackdog.app/stackdog-mark.png";
+
+/// Avatar used when the primary icon host is unreachable
+const FALLBACK_SLACK_ICON_URL: &str =
+    "https://raw.githubusercontent.com/trydirect/stackdog/main/website/public/stackdog-mark.png";
+
+/// Cached result of the icon-host probe, resolved once per process
+static RESOLVED_SLACK_ICON_URL: tokio::sync::OnceCell<&'static str> =
+    tokio::sync::OnceCell::const_new();
+
+/// Pick the default avatar, falling back to the GitHub copy when the primary
+/// host does not answer.
+///
+/// The probe runs from this host rather than from Slack's fetchers, so it is a
+/// proxy for reachability, not a guarantee. It runs at most once per process.
+async fn resolve_default_slack_icon_url() -> &'static str {
+    *RESOLVED_SLACK_ICON_URL
+        .get_or_init(|| async {
+            let reachable = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .map(|client| client.head(DEFAULT_SLACK_ICON_URL).send())
+                .ok();
+
+            match reachable {
+                Some(request) => match request.await {
+                    Ok(resp) if resp.status().is_success() => DEFAULT_SLACK_ICON_URL,
+                    Ok(resp) => {
+                        log::debug!(
+                            "Slack icon host returned {}, using fallback avatar",
+                            resp.status()
+                        );
+                        FALLBACK_SLACK_ICON_URL
+                    }
+                    Err(e) => {
+                        log::debug!("Slack icon host unreachable ({e}), using fallback avatar");
+                        FALLBACK_SLACK_ICON_URL
+                    }
+                },
+                None => FALLBACK_SLACK_ICON_URL,
+            }
+        })
+        .await
+}
+
 /// Notification configuration
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NotificationConfig {
     slack_webhook: Option<String>,
+    discord_webhook: Option<String>,
+    telegram_bot_token: Option<String>,
+    telegram_chat_id: Option<String>,
+    ui_url: Option<String>,
+    slack_username: Option<String>,
+    slack_icon_url: Option<String>,
     smtp_host: Option<String>,
     smtp_port: Option<u16>,
     smtp_user: Option<String>,
     smtp_password: Option<String>,
     webhook_url: Option<String>,
     email_recipients: Vec<String>,
+    notification_label: Option<String>,
+    minimum_severity: AlertSeverity,
 }
 
 impl NotificationConfig {
@@ -26,18 +84,104 @@ impl NotificationConfig {
     pub fn new() -> Self {
         Self {
             slack_webhook: None,
+            discord_webhook: None,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            ui_url: None,
+            slack_username: None,
+            slack_icon_url: None,
             smtp_host: None,
             smtp_port: None,
             smtp_user: None,
             smtp_password: None,
             webhook_url: None,
             email_recipients: Vec::new(),
+            notification_label: None,
+            minimum_severity: AlertSeverity::Info,
+        }
+    }
+
+    /// Build notification config from environment variables.
+    pub fn from_env() -> Self {
+        Self {
+            slack_webhook: env::var("STACKDOG_SLACK_WEBHOOK_URL").ok(),
+            discord_webhook: env::var("STACKDOG_DISCORD_WEBHOOK_URL").ok(),
+            telegram_bot_token: env::var("STACKDOG_TELEGRAM_BOT_TOKEN").ok(),
+            telegram_chat_id: env::var("STACKDOG_TELEGRAM_CHAT_ID").ok(),
+            ui_url: env::var("STACKDOG_UI_URL")
+                .ok()
+                .map(|url| url.trim().to_string())
+                .filter(|url| !url.is_empty()),
+            slack_username: env::var("STACKDOG_SLACK_USERNAME").ok(),
+            slack_icon_url: env::var("STACKDOG_SLACK_ICON_URL").ok(),
+            smtp_host: env::var("STACKDOG_SMTP_HOST").ok(),
+            smtp_port: env::var("STACKDOG_SMTP_PORT")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+            smtp_user: env::var("STACKDOG_SMTP_USER").ok(),
+            smtp_password: env::var("STACKDOG_SMTP_PASSWORD").ok(),
+            webhook_url: env::var("STACKDOG_WEBHOOK_URL").ok(),
+            email_recipients: env::var("STACKDOG_EMAIL_RECIPIENTS")
+                .ok()
+                .map(|recipients| {
+                    recipients
+                        .split(',')
+                        .map(|recipient| recipient.trim().to_string())
+                        .filter(|recipient| !recipient.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            notification_label: env::var("STACKDOG_NOTIFICATION_LABEL")
+                .ok()
+                .filter(|label| !label.trim().is_empty())
+                .or_else(detect_hostname),
+            minimum_severity: env::var("STACKDOG_NOTIFICATION_MIN_SEVERITY")
+                .ok()
+                .and_then(|value| parse_alert_severity(&value))
+                .unwrap_or(AlertSeverity::Info),
         }
     }
 
     /// Set Slack webhook
     pub fn with_slack_webhook(mut self, url: String) -> Self {
         self.slack_webhook = Some(url);
+        self
+    }
+
+    /// Set Discord webhook
+    pub fn with_discord_webhook(mut self, url: String) -> Self {
+        self.discord_webhook = Some(url);
+        self
+    }
+
+    /// Set Telegram bot credentials; alerts need both a token and a chat
+    pub fn with_telegram(mut self, bot_token: String, chat_id: String) -> Self {
+        self.telegram_bot_token = Some(bot_token);
+        self.telegram_chat_id = Some(chat_id);
+        self
+    }
+
+    /// Set the dashboard base URL used to build links back to an alert
+    pub fn with_ui_url(mut self, url: String) -> Self {
+        self.ui_url = Some(url);
+        self
+    }
+
+    /// Link to an alert in the dashboard, when a base URL is configured
+    pub fn alert_url(&self, alert_id: &str) -> Option<String> {
+        let base = self.ui_url.as_deref()?.trim_end_matches('/');
+        Some(format!("{base}/#alerts/{alert_id}"))
+    }
+
+    /// Set the display name shown on Slack messages
+    pub fn with_slack_username(mut self, username: String) -> Self {
+        self.slack_username = Some(username);
+        self
+    }
+
+    /// Set the avatar image used on Slack messages
+    pub fn with_slack_icon_url(mut self, url: String) -> Self {
+        self.slack_icon_url = Some(url);
         self
     }
 
@@ -77,9 +221,59 @@ impl NotificationConfig {
         self
     }
 
+    /// Set notification label
+    pub fn with_notification_label(mut self, label: String) -> Self {
+        self.notification_label = Some(label);
+        self
+    }
+
+    /// Set minimum severity for non-action notifications
+    pub fn with_minimum_severity(mut self, severity: AlertSeverity) -> Self {
+        self.minimum_severity = severity;
+        self
+    }
+
     /// Get Slack webhook
     pub fn slack_webhook(&self) -> Option<&str> {
         self.slack_webhook.as_deref()
+    }
+
+    /// Get Discord webhook
+    pub fn discord_webhook(&self) -> Option<&str> {
+        self.discord_webhook.as_deref()
+    }
+
+    /// Get Telegram bot token
+    pub fn telegram_bot_token(&self) -> Option<&str> {
+        self.telegram_bot_token.as_deref()
+    }
+
+    /// Get Telegram chat id
+    pub fn telegram_chat_id(&self) -> Option<&str> {
+        self.telegram_chat_id.as_deref()
+    }
+
+    /// Get the Slack display name, falling back to the Stackdog default
+    pub fn slack_username(&self) -> &str {
+        self.slack_username
+            .as_deref()
+            .unwrap_or(DEFAULT_SLACK_USERNAME)
+    }
+
+    /// Get the Slack avatar URL, falling back to the Stackdog mark
+    pub fn slack_icon_url(&self) -> &str {
+        self.slack_icon_url
+            .as_deref()
+            .unwrap_or(DEFAULT_SLACK_ICON_URL)
+    }
+
+    /// Resolve the Slack avatar, probing the primary host when no explicit
+    /// override is configured.
+    pub async fn resolved_slack_icon_url(&self) -> &str {
+        match self.slack_icon_url.as_deref() {
+            Some(url) => url,
+            None => resolve_default_slack_icon_url().await,
+        }
     }
 
     /// Get SMTP host
@@ -112,6 +306,16 @@ impl NotificationConfig {
         self.webhook_url.as_deref()
     }
 
+    /// Get notification label
+    pub fn notification_label(&self) -> Option<&str> {
+        self.notification_label.as_deref()
+    }
+
+    /// Get minimum severity for non-action notifications
+    pub fn minimum_severity(&self) -> AlertSeverity {
+        self.minimum_severity
+    }
+
     /// Return only channels that are both policy-selected and actually configured.
     pub fn configured_channels_for_severity(
         &self,
@@ -123,10 +327,44 @@ impl NotificationConfig {
             .collect()
     }
 
+    pub fn configured_channels_for_stored_alert(
+        &self,
+        alert: &crate::database::models::Alert,
+    ) -> Vec<NotificationChannel> {
+        if is_action_alert(alert) {
+            return self.configured_action_channels();
+        }
+
+        if alert.severity < self.minimum_severity {
+            return Vec::new();
+        }
+
+        self.configured_channels_for_severity(alert.severity)
+    }
+
+    fn configured_action_channels(&self) -> Vec<NotificationChannel> {
+        // Telegram is deliberately absent: it carries security alerts only,
+        // not action notifications.
+        [
+            NotificationChannel::Console,
+            NotificationChannel::Slack,
+            NotificationChannel::Discord,
+            NotificationChannel::Email,
+            NotificationChannel::Webhook,
+        ]
+        .into_iter()
+        .filter(|channel| self.supports_channel(channel))
+        .collect()
+    }
+
     fn supports_channel(&self, channel: &NotificationChannel) -> bool {
         match channel {
             NotificationChannel::Console => true,
             NotificationChannel::Slack => self.slack_webhook.is_some(),
+            NotificationChannel::Discord => self.discord_webhook.is_some(),
+            NotificationChannel::Telegram => {
+                self.telegram_bot_token.is_some() && self.telegram_chat_id.is_some()
+            }
             NotificationChannel::Webhook => self.webhook_url.is_some(),
             NotificationChannel::Email => {
                 self.smtp_host.is_some()
@@ -139,11 +377,72 @@ impl NotificationConfig {
     }
 }
 
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn env_flag_enabled(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
+}
+
+fn parse_alert_severity(value: &str) -> Option<AlertSeverity> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "info" => Some(AlertSeverity::Info),
+        "low" => Some(AlertSeverity::Low),
+        "medium" => Some(AlertSeverity::Medium),
+        "high" => Some(AlertSeverity::High),
+        "critical" => Some(AlertSeverity::Critical),
+        _ => None,
+    }
+}
+
+/// Best-effort identity of the machine an alert came from, for when
+/// `STACKDOG_NOTIFICATION_LABEL` is not set. An alert nobody can attribute to
+/// a host is half an alert in a fleet.
+fn detect_hostname() -> Option<String> {
+    if let Ok(name) = env::var("HOSTNAME") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    if let Ok(name) = std::fs::read_to_string("/etc/hostname") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn is_action_alert(alert: &crate::database::models::Alert) -> bool {
+    matches!(
+        alert.alert_type,
+        crate::alerting::alert::AlertType::QuarantineApplied
+    ) || alert
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.source.as_deref())
+        .map(|source| matches!(source, "ip_ban" | "quarantine"))
+        .unwrap_or(false)
+}
+
 /// Notification channel
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationChannel {
     Console,
     Slack,
+    Discord,
+    Telegram,
     Email,
     Webhook,
 }
@@ -158,6 +457,8 @@ impl NotificationChannel {
         match self {
             NotificationChannel::Console => self.send_console(alert),
             NotificationChannel::Slack => self.send_slack(alert, config).await,
+            NotificationChannel::Discord => self.send_discord(alert, config).await,
+            NotificationChannel::Telegram => self.send_telegram(alert, config).await,
             NotificationChannel::Email => self.send_email(alert, config).await,
             NotificationChannel::Webhook => self.send_webhook(alert, config).await,
         }
@@ -183,7 +484,8 @@ impl NotificationChannel {
         config: &NotificationConfig,
     ) -> Result<NotificationResult> {
         if let Some(webhook_url) = config.slack_webhook() {
-            let payload = build_slack_message(alert);
+            let icon_url = config.resolved_slack_icon_url().await;
+            let payload = build_slack_message_with_icon(alert, config, icon_url);
             log::debug!("Sending Slack notification to webhook");
             log::trace!("Slack payload: {}", payload);
 
@@ -225,6 +527,108 @@ impl NotificationChannel {
         }
     }
 
+    /// Send a Discord notification through an incoming webhook
+    async fn send_discord(
+        &self,
+        alert: &Alert,
+        config: &NotificationConfig,
+    ) -> Result<NotificationResult> {
+        if let Some(webhook_url) = config.discord_webhook() {
+            let payload = build_discord_message(alert, config);
+            log::debug!("Sending Discord notification to webhook");
+            log::trace!("Discord payload: {}", payload);
+
+            let client = reqwest::Client::new();
+            match client
+                .post(webhook_url)
+                .header("Content-Type", "application/json")
+                .body(payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        log::info!("Discord notification sent successfully");
+                        Ok(NotificationResult::Success("sent to Discord".to_string()))
+                    } else {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        log::warn!("Discord API returned {}: {}", status, body);
+                        Ok(NotificationResult::Failure(format!(
+                            "Discord returned {}: {}",
+                            status, body
+                        )))
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to send Discord notification: {}", e);
+                    Ok(NotificationResult::Failure(format!(
+                        "Discord request failed: {}",
+                        e
+                    )))
+                }
+            }
+        } else {
+            log::debug!("Discord webhook not configured, skipping");
+            Ok(NotificationResult::Failure(
+                "Discord webhook not configured".to_string(),
+            ))
+        }
+    }
+
+    /// Send a Telegram alert through the Bot API. Alerts only: action
+    /// notifications are deliberately not routed here.
+    async fn send_telegram(
+        &self,
+        alert: &Alert,
+        config: &NotificationConfig,
+    ) -> Result<NotificationResult> {
+        let (Some(token), Some(_chat_id)) =
+            (config.telegram_bot_token(), config.telegram_chat_id())
+        else {
+            log::debug!("Telegram bot token or chat id not configured, skipping");
+            return Ok(NotificationResult::Failure(
+                "Telegram bot token or chat id not configured".to_string(),
+            ));
+        };
+
+        let payload = build_telegram_message(alert, config);
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+        log::debug!("Sending Telegram notification");
+        log::trace!("Telegram payload: {}", payload);
+
+        let client = reqwest::Client::new();
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    log::info!("Telegram notification sent successfully");
+                    Ok(NotificationResult::Success("sent to Telegram".to_string()))
+                } else {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    log::warn!("Telegram API returned {}: {}", status, body);
+                    Ok(NotificationResult::Failure(format!(
+                        "Telegram returned {}: {}",
+                        status, body
+                    )))
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to send Telegram notification: {}", e);
+                Ok(NotificationResult::Failure(format!(
+                    "Telegram request failed: {}",
+                    e
+                )))
+            }
+        }
+    }
+
     /// Send via email
     async fn send_email(
         &self,
@@ -253,11 +657,17 @@ impl NotificationChannel {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
-                let mut message_builder = Message::builder().from(from).subject(format!(
-                    "[Stackdog][{}] {}",
-                    alert.severity(),
-                    alert.alert_type()
-                ));
+                let subject = if let Some(label) = config.notification_label() {
+                    format!(
+                        "[Stackdog][{}][{}] {}",
+                        label,
+                        alert.severity(),
+                        alert.alert_type()
+                    )
+                } else {
+                    format!("[Stackdog][{}] {}", alert.severity(), alert.alert_type())
+                };
+                let mut message_builder = Message::builder().from(from).subject(subject);
 
                 for recipient in recipients {
                     message_builder = message_builder.to(recipient);
@@ -265,8 +675,8 @@ impl NotificationChannel {
 
                 let message = message_builder.multipart(
                     MultiPart::alternative()
-                        .singlepart(SinglePart::plain(build_email_text(alert)))
-                        .singlepart(SinglePart::html(build_email_html(alert))),
+                        .singlepart(SinglePart::plain(build_email_text(alert, config)))
+                        .singlepart(SinglePart::html(build_email_html(alert, config))),
                 )?;
 
                 let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(host)?
@@ -295,7 +705,7 @@ impl NotificationChannel {
         config: &NotificationConfig,
     ) -> Result<NotificationResult> {
         if let Some(webhook_url) = config.webhook_url() {
-            let payload = build_webhook_payload(alert);
+            let payload = build_webhook_payload(alert, config);
             let client = reqwest::Client::new();
             match client
                 .post(webhook_url)
@@ -329,6 +739,42 @@ impl NotificationChannel {
     }
 }
 
+pub async fn dispatch_stored_alert(
+    alert: &crate::database::models::Alert,
+    config: &NotificationConfig,
+) -> Result<usize> {
+    let mut runtime_alert = Alert::new(alert.alert_type, alert.severity, alert.message.clone())
+        .with_id(alert.id.clone());
+
+    if let Some(metadata) = &alert.metadata {
+        if let Some(container_id) = &metadata.container_id {
+            runtime_alert.add_metadata("container_id".into(), container_id.clone());
+        }
+        if let Some(source) = &metadata.source {
+            runtime_alert.add_metadata("source".into(), source.clone());
+        }
+        if let Some(reason) = &metadata.reason {
+            runtime_alert.add_metadata("reason".into(), reason.clone());
+        }
+        for (key, value) in &metadata.extra {
+            runtime_alert.add_metadata(key.clone(), value.clone());
+        }
+    }
+
+    let channels = config.configured_channels_for_stored_alert(alert);
+    let mut sent = 0;
+    for channel in &channels {
+        match channel.send(&runtime_alert, config).await? {
+            NotificationResult::Success(_) => sent += 1,
+            NotificationResult::Failure(message) => {
+                log::warn!("Action notification channel reported failure: {}", message)
+            }
+        }
+    }
+
+    Ok(sent)
+}
+
 /// Notification result
 #[derive(Debug, Clone)]
 pub enum NotificationResult {
@@ -353,6 +799,8 @@ pub fn route_by_severity(severity: AlertSeverity) -> Vec<NotificationChannel> {
             vec![
                 NotificationChannel::Console,
                 NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
                 NotificationChannel::Email,
                 NotificationChannel::Webhook,
             ]
@@ -361,11 +809,18 @@ pub fn route_by_severity(severity: AlertSeverity) -> Vec<NotificationChannel> {
             vec![
                 NotificationChannel::Console,
                 NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
                 NotificationChannel::Webhook,
             ]
         }
         AlertSeverity::Medium => {
-            vec![NotificationChannel::Console, NotificationChannel::Slack]
+            vec![
+                NotificationChannel::Console,
+                NotificationChannel::Slack,
+                NotificationChannel::Discord,
+                NotificationChannel::Telegram,
+            ]
         }
         AlertSeverity::Low => {
             vec![NotificationChannel::Console]
@@ -388,25 +843,117 @@ pub fn severity_to_slack_color(severity: AlertSeverity) -> &'static str {
 }
 
 /// Build Slack message payload
-pub fn build_slack_message(alert: &Alert) -> String {
+pub fn build_slack_message(alert: &Alert, config: &NotificationConfig) -> String {
+    build_slack_message_with_icon(alert, config, config.slack_icon_url())
+}
+
+/// Discord allows 2000 characters per message; keep the whole alert readable
+/// rather than letting the API reject a long one.
+const DISCORD_CONTENT_LIMIT: usize = 2000;
+
+/// Build Discord webhook payload: a plain content message, since incoming
+/// webhooks already carry their own name and avatar.
+pub fn build_discord_message(alert: &Alert, config: &NotificationConfig) -> String {
+    let mut content = format!(
+        "**Stackdog Security Alert**\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n",
+        alert.alert_type(),
+        alert.severity(),
+        alert.status(),
+        alert.timestamp().to_rfc3339(),
+    );
+    if let Some(label) = config.notification_label() {
+        content.push_str(&format!("Instance: {label}\n"));
+    }
+    content.push_str(alert.message());
+    if let Some(url) = config.alert_url(alert.id()) {
+        content.push_str(&format!("\nDetails: {url}"));
+    }
+
+    let content = truncate_chars(&content, DISCORD_CONTENT_LIMIT);
+
+    serde_json::json!({ "content": content }).to_string()
+}
+
+/// Truncate on a character boundary so multi-byte text stays valid UTF-8.
+fn truncate_chars(value: &str, max: usize) -> &str {
+    if value.len() <= max {
+        return value;
+    }
+    let mut end = max;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// Telegram allows 4096 characters per message.
+const TELEGRAM_TEXT_LIMIT: usize = 4096;
+
+/// Build Telegram sendMessage payload: plain text without parse_mode, so
+/// message content can never break the request by looking like markup.
+pub fn build_telegram_message(alert: &Alert, config: &NotificationConfig) -> String {
+    let mut text = format!(
+        "Stackdog Security Alert\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n",
+        alert.alert_type(),
+        alert.severity(),
+        alert.status(),
+        alert.timestamp().to_rfc3339(),
+    );
+    if let Some(label) = config.notification_label() {
+        text.push_str(&format!("Instance: {label}\n"));
+    }
+    text.push_str(alert.message());
+    if let Some(url) = config.alert_url(alert.id()) {
+        text.push_str(&format!("\nDetails: {url}"));
+    }
+
+    let text = truncate_chars(&text, TELEGRAM_TEXT_LIMIT);
+
     serde_json::json!({
-        "text": "🐕 Stackdog Security Alert",
+        "chat_id": config.telegram_chat_id(),
+        "text": text,
+    })
+    .to_string()
+}
+
+/// Build Slack message payload with an explicit avatar URL
+pub fn build_slack_message_with_icon(
+    alert: &Alert,
+    config: &NotificationConfig,
+    icon_url: &str,
+) -> String {
+    let mut fields = vec![
+        serde_json::json!({"title": "Severity", "value": alert.severity().to_string(), "short": true}),
+        serde_json::json!({"title": "Status", "value": alert.status().to_string(), "short": true}),
+        serde_json::json!({"title": "Time", "value": alert.timestamp().to_rfc3339(), "short": true}),
+    ];
+    if let Some(label) = config.notification_label() {
+        fields.push(serde_json::json!({"title": "Instance", "value": label, "short": true}));
+    }
+    if let Some(url) = config.alert_url(alert.id()) {
+        fields.push(serde_json::json!({
+            "title": "Details",
+            "value": format!("<{url}|Open in Stackdog>"),
+            "short": true
+        }));
+    }
+
+    serde_json::json!({
+        "username": config.slack_username(),
+        "icon_url": icon_url,
+        "text": "Stackdog Security Alert",
         "attachments": [{
             "color": severity_to_slack_color(alert.severity()),
             "title": format!("{:?}", alert.alert_type()),
             "text": alert.message(),
-            "fields": [
-                {"title": "Severity", "value": alert.severity().to_string(), "short": true},
-                {"title": "Status", "value": alert.status().to_string(), "short": true},
-                {"title": "Time", "value": alert.timestamp().to_rfc3339(), "short": true}
-            ]
+            "fields": fields
         }]
     })
     .to_string()
 }
 
 /// Build webhook payload
-pub fn build_webhook_payload(alert: &Alert) -> String {
+pub fn build_webhook_payload(alert: &Alert, config: &NotificationConfig) -> String {
     serde_json::json!({
         "alert_type": alert.alert_type().to_string(),
         "severity": alert.severity().to_string(),
@@ -414,35 +961,70 @@ pub fn build_webhook_payload(alert: &Alert) -> String {
         "timestamp": alert.timestamp().to_rfc3339(),
         "status": alert.status().to_string(),
         "metadata": alert.metadata(),
+        "instance_label": config.notification_label(),
+        "alert_id": alert.id(),
+        "details_url": config.alert_url(alert.id()),
     })
     .to_string()
 }
 
-fn build_email_text(alert: &Alert) -> String {
+fn build_email_text(alert: &Alert, config: &NotificationConfig) -> String {
     format!(
-        "Stackdog Security Alert\n\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n\n{}\n",
+        "Stackdog Security Alert\n{}\nType: {}\nSeverity: {}\nStatus: {}\nTime: {}\n\n{}\n",
+        config
+            .notification_label()
+            .map(|label| format!("Instance: {label}\n"))
+            .unwrap_or_default(),
         alert.alert_type(),
         alert.severity(),
         alert.status(),
         alert.timestamp().to_rfc3339(),
         alert.message(),
-    )
+    ) + &config
+        .alert_url(alert.id())
+        .map(|url| format!("\nDetails: {url}\n"))
+        .unwrap_or_default()
 }
 
-fn build_email_html(alert: &Alert) -> String {
+fn build_email_html(alert: &Alert, config: &NotificationConfig) -> String {
     format!(
-        "<h2>Stackdog Security Alert</h2><p><strong>Type:</strong> {}</p><p><strong>Severity:</strong> {}</p><p><strong>Status:</strong> {}</p><p><strong>Time:</strong> {}</p><p>{}</p>",
+        "<h2>Stackdog Security Alert</h2>{}<p><strong>Type:</strong> {}</p><p><strong>Severity:</strong> {}</p><p><strong>Status:</strong> {}</p><p><strong>Time:</strong> {}</p><p>{}</p>",
+        config
+            .notification_label()
+            .map(|label| format!("<p><strong>Instance:</strong> {label}</p>"))
+            .unwrap_or_default(),
         alert.alert_type(),
         alert.severity(),
         alert.status(),
         alert.timestamp().to_rfc3339(),
         alert.message(),
-    )
+    ) + &config
+        .alert_url(alert.id())
+        .map(|url| format!("<p><a href=\"{url}\">Open in Stackdog</a></p>"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn clear_notification_env() {
+        env::remove_var("STACKDOG_SLACK_WEBHOOK_URL");
+        env::remove_var("STACKDOG_UI_URL");
+        env::remove_var("STACKDOG_WEBHOOK_URL");
+        env::remove_var("STACKDOG_SMTP_HOST");
+        env::remove_var("STACKDOG_SMTP_PORT");
+        env::remove_var("STACKDOG_SMTP_USER");
+        env::remove_var("STACKDOG_SMTP_PASSWORD");
+        env::remove_var("STACKDOG_EMAIL_RECIPIENTS");
+        env::remove_var("STACKDOG_NOTIFICATION_LABEL");
+        env::remove_var("STACKDOG_NOTIFICATION_MIN_SEVERITY");
+        env::remove_var("STACKDOG_NOTIFY_IP_BAN_ACTIONS");
+        env::remove_var("STACKDOG_NOTIFY_QUARANTINE_ACTIONS");
+    }
 
     #[tokio::test]
     async fn test_console_notification() {
@@ -455,6 +1037,76 @@ mod tests {
 
         let result = channel.send(&alert, &NotificationConfig::default()).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_notification_config_from_env_reads_channels() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+
+        env::set_var(
+            "STACKDOG_SLACK_WEBHOOK_URL",
+            "https://hooks.slack.test/services/1",
+        );
+        env::set_var("STACKDOG_WEBHOOK_URL", "https://example.test/webhook");
+        env::set_var("STACKDOG_SMTP_HOST", "smtp.example.com");
+        env::set_var("STACKDOG_SMTP_PORT", "2525");
+        env::set_var("STACKDOG_SMTP_USER", "alerts@example.com");
+        env::set_var("STACKDOG_SMTP_PASSWORD", "secret");
+        env::set_var(
+            "STACKDOG_EMAIL_RECIPIENTS",
+            "soc@example.com,oncall@example.com",
+        );
+        env::set_var("STACKDOG_NOTIFICATION_LABEL", "prod-eu-1");
+
+        let config = NotificationConfig::from_env();
+
+        assert_eq!(
+            config.slack_webhook(),
+            Some("https://hooks.slack.test/services/1")
+        );
+        assert_eq!(config.webhook_url(), Some("https://example.test/webhook"));
+        assert_eq!(config.smtp_host(), Some("smtp.example.com"));
+        assert_eq!(config.smtp_port(), Some(2525));
+        assert_eq!(config.smtp_user(), Some("alerts@example.com"));
+        assert_eq!(config.smtp_password(), Some("secret"));
+        assert_eq!(
+            config.email_recipients(),
+            &[
+                "soc@example.com".to_string(),
+                "oncall@example.com".to_string()
+            ]
+        );
+        assert_eq!(config.notification_label(), Some("prod-eu-1"));
+        assert_eq!(config.minimum_severity(), AlertSeverity::Info);
+
+        clear_notification_env();
+    }
+
+    #[test]
+    fn test_notification_config_from_env_reads_minimum_severity() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+        env::set_var("STACKDOG_NOTIFICATION_MIN_SEVERITY", "critical");
+
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.minimum_severity(), AlertSeverity::Critical);
+
+        clear_notification_env();
+    }
+
+    #[test]
+    fn test_env_flag_enabled_honors_boolean_values() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+
+        assert!(env_flag_enabled("STACKDOG_NOTIFY_IP_BAN_ACTIONS", true));
+        env::set_var("STACKDOG_NOTIFY_IP_BAN_ACTIONS", "false");
+        assert!(!env_flag_enabled("STACKDOG_NOTIFY_IP_BAN_ACTIONS", true));
+        env::set_var("STACKDOG_NOTIFY_IP_BAN_ACTIONS", "yes");
+        assert!(env_flag_enabled("STACKDOG_NOTIFY_IP_BAN_ACTIONS", false));
+
+        clear_notification_env();
     }
 
     #[test]
@@ -473,6 +1125,38 @@ mod tests {
     }
 
     #[test]
+    fn test_configured_channels_for_stored_alert_filters_non_action_below_threshold() {
+        let config = NotificationConfig::default()
+            .with_slack_webhook("https://hooks.slack.test/services/1".into())
+            .with_minimum_severity(AlertSeverity::Critical);
+        let alert = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "High severity finding".to_string(),
+        );
+
+        let channels = config.configured_channels_for_stored_alert(&alert);
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn test_configured_channels_for_stored_alert_keeps_action_notifications() {
+        let config = NotificationConfig::default()
+            .with_slack_webhook("https://hooks.slack.test/services/1".into())
+            .with_minimum_severity(AlertSeverity::Critical);
+        let alert = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::SystemEvent,
+            AlertSeverity::Info,
+            "Released IP ban".to_string(),
+        )
+        .with_metadata(crate::database::models::AlertMetadata::default().with_source("ip_ban"));
+
+        let channels = config.configured_channels_for_stored_alert(&alert);
+        assert!(channels.contains(&NotificationChannel::Console));
+        assert!(channels.contains(&NotificationChannel::Slack));
+    }
+
+    #[test]
     fn test_build_webhook_payload_is_valid_json() {
         let alert = Alert::new(
             crate::alerting::alert::AlertType::ThreatDetected,
@@ -480,10 +1164,186 @@ mod tests {
             "Webhook test".to_string(),
         );
 
-        let payload = build_webhook_payload(&alert);
+        let payload = build_webhook_payload(
+            &alert,
+            &NotificationConfig::default().with_notification_label("prod-eu-1".into()),
+        );
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["severity"], "High");
         assert_eq!(json["message"], "Webhook test");
+        assert_eq!(json["instance_label"], "prod-eu-1");
+    }
+
+    #[test]
+    fn test_build_slack_message_uses_default_identity() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(&alert, &NotificationConfig::default());
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["username"], DEFAULT_SLACK_USERNAME);
+        assert_eq!(json["icon_url"], DEFAULT_SLACK_ICON_URL);
+    }
+
+    #[test]
+    fn test_build_slack_message_honors_custom_identity() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default()
+                .with_slack_username("Stackdog prod".into())
+                .with_slack_icon_url("https://example.test/mark.png".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["username"], "Stackdog prod");
+        assert_eq!(json["icon_url"], "https://example.test/mark.png");
+    }
+
+    #[tokio::test]
+    async fn test_alert_url_is_absent_without_a_dashboard_url() {
+        assert_eq!(NotificationConfig::default().alert_url("a1"), None);
+    }
+
+    #[tokio::test]
+    async fn test_alert_url_points_at_the_dashboard_deep_link() {
+        let config = NotificationConfig::default().with_ui_url("https://stackdog.example/".into());
+        assert_eq!(
+            config.alert_url("a1").as_deref(),
+            Some("https://stackdog.example/#alerts/a1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_slack_message_links_back_to_the_alert() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThresholdExceeded,
+            AlertSeverity::High,
+            "Blocked IP 198.51.100.7".to_string(),
+        )
+        .with_id("a1".into());
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default().with_ui_url("https://stackdog.example".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+
+        assert!(fields.iter().any(|field| {
+            field["title"] == "Details"
+                && field["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("https://stackdog.example/#alerts/a1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_keeps_the_stored_alert_id() {
+        // A regenerated id would make the link point at an alert that does not
+        // exist.
+        let stored = crate::database::models::Alert::new(
+            crate::alerting::alert::AlertType::ThresholdExceeded,
+            AlertSeverity::High,
+            "Blocked IP 198.51.100.7".to_string(),
+        );
+        let runtime = Alert::new(stored.alert_type, stored.severity, stored.message.clone())
+            .with_id(stored.id.clone());
+
+        assert_eq!(runtime.id(), stored.id);
+    }
+
+    #[tokio::test]
+    async fn test_resolved_slack_icon_url_short_circuits_on_override() {
+        let config =
+            NotificationConfig::default().with_slack_icon_url("https://x.test/a.png".into());
+        assert_eq!(
+            config.resolved_slack_icon_url().await,
+            "https://x.test/a.png"
+        );
+    }
+
+    #[test]
+    fn test_build_slack_message_with_icon_uses_given_url() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message_with_icon(
+            &alert,
+            &NotificationConfig::default(),
+            FALLBACK_SLACK_ICON_URL,
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["icon_url"], FALLBACK_SLACK_ICON_URL);
+    }
+
+    #[test]
+    fn test_build_slack_message_includes_instance_label() {
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+
+        let payload = build_slack_message(
+            &alert,
+            &NotificationConfig::default().with_notification_label("prod-eu-1".into()),
+        );
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+        assert!(fields
+            .iter()
+            .any(|field| { field["title"] == "Instance" && field["value"] == "prod-eu-1" }));
+    }
+
+    #[test]
+    fn test_notification_label_falls_back_to_hostname() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_notification_env();
+        let previous_hostname = env::var("HOSTNAME").ok();
+
+        // Without an explicit label the alert must still say which machine it
+        // came from — an unattributable alert is half an alert in a fleet.
+        env::set_var("HOSTNAME", "box-1");
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.notification_label(), Some("box-1"));
+
+        let alert = Alert::new(
+            crate::alerting::alert::AlertType::ThreatDetected,
+            AlertSeverity::High,
+            "Slack test".to_string(),
+        );
+        let payload = build_slack_message(&alert, &config);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let fields = json["attachments"][0]["fields"].as_array().unwrap();
+        assert!(
+            fields
+                .iter()
+                .any(|field| field["title"] == "Instance" && field["value"] == "box-1"),
+            "hostname fallback must reach the Slack payload: {payload}"
+        );
+
+        // The explicit label still wins.
+        env::set_var("STACKDOG_NOTIFICATION_LABEL", "prod-eu-1");
+        let config = NotificationConfig::from_env();
+        assert_eq!(config.notification_label(), Some("prod-eu-1"));
+
+        clear_notification_env();
+        match previous_hostname {
+            Some(value) => env::set_var("HOSTNAME", value),
+            None => env::remove_var("HOSTNAME"),
+        }
     }
 
     #[tokio::test]
@@ -530,5 +1390,29 @@ mod tests {
         let channels = config.configured_channels_for_severity(AlertSeverity::Critical);
 
         assert!(channels.contains(&NotificationChannel::Email));
+    }
+
+    #[test]
+    fn test_telegram_needs_both_a_token_and_a_chat() {
+        let token_only = NotificationConfig {
+            telegram_bot_token: Some("123:abc".to_string()),
+            telegram_chat_id: None,
+            ..Default::default()
+        };
+        assert!(!token_only.supports_channel(&NotificationChannel::Telegram));
+
+        let chat_only = NotificationConfig {
+            telegram_bot_token: None,
+            telegram_chat_id: Some("-100123".to_string()),
+            ..Default::default()
+        };
+        assert!(!chat_only.supports_channel(&NotificationChannel::Telegram));
+
+        let both = NotificationConfig {
+            telegram_bot_token: Some("123:abc".to_string()),
+            telegram_chat_id: Some("-100123".to_string()),
+            ..Default::default()
+        };
+        assert!(both.supports_channel(&NotificationChannel::Telegram));
     }
 }

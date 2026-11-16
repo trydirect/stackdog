@@ -50,6 +50,7 @@ pub mod collectors;
 pub mod baselines;
 pub mod correlator;
 pub mod database;
+pub mod detectors;
 pub mod docker;
 pub mod ip_ban;
 pub mod ml;
@@ -63,6 +64,9 @@ pub mod api;
 
 // Log sniffing
 pub mod sniff;
+
+// AI tool-use
+pub mod tools;
 
 // Re-export commonly used types
 pub use events::security::{AlertEvent, ContainerEvent, NetworkEvent, SecurityEvent};

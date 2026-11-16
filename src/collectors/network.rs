@@ -94,6 +94,7 @@ mod tests {
             status: "Running".to_string(),
             created: String::new(),
             network_settings: HashMap::from([("bridge".to_string(), "172.17.0.5".to_string())]),
+            labels: HashMap::new(),
         };
 
         let event = build_network_event(&container, 64_000, 250).unwrap();
@@ -111,6 +112,7 @@ mod tests {
             status: "Running".to_string(),
             created: String::new(),
             network_settings: HashMap::new(),
+            labels: HashMap::new(),
         };
 
         assert!(build_network_event(&container, 64_000, 250).is_none());

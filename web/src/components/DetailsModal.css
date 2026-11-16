@@ -1,0 +1,122 @@
+.security-details-modal {
+  color: #172b45;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.875rem;
+}
+
+.security-details-modal .modal-content {
+  border: 1px solid #dde3eb;
+  border-radius: 12px;
+}
+
+.security-details-modal .modal-header,
+
+.security-details-modal .modal-footer {
+  padding: 20px 24px;
+  border-color: #e5eaf0;
+}
+
+.security-details-modal .modal-title {
+  font-size: 1.125rem;
+  font-weight: 650;
+}
+
+.security-details-modal .modal-body {
+  padding: 24px;
+}
+
+.security-details-modal .detail-grid {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 16px 24px;
+  margin: 0;
+}
+
+.security-details-modal .detail-grid dt {
+  color: #526379;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.security-details-modal .detail-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.security-details-modal .detail-grid code {
+  color: #33465e;
+  font-size: 0.8125rem;
+  word-break: break-all;
+}
+
+.security-details-modal .detail-message {
+  white-space: pre-wrap;
+}
+
+.security-details-modal .detail-metadata {
+  margin-top: 24px;
+}
+
+.security-details-modal .detail-metadata h3 {
+  color: #526379;
+  font-size: 0.75rem;
+  margin-bottom: 12px;
+}
+
+.security-details-modal .detail-metadata pre {
+  padding: 16px;
+  margin: 0;
+  border-radius: 6px;
+  background: #f4f6f9;
+  color: #33465e;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.security-details-modal .badge.bg-warning,
+
+.security-details-modal .badge.bg-info {
+  color: #172b45;
+}
+
+.security-details-modal .btn {
+  min-height: 40px;
+  font-size: 0.8125rem;
+}
+
+.security-details-modal .form-label {
+  color: #526379;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.security-details-modal .form-control {
+  border-color: #c4cedb;
+  font-size: 0.875rem;
+}
+
+.security-details-modal :focus-visible {
+  outline: 3px solid #2457c5;
+  outline-offset: 3px;
+}
+
+@media (max-width: 575.98px) {
+  .security-details-modal .modal-body,
+  .security-details-modal .modal-header,
+
+  .security-details-modal .modal-footer {
+    padding: 16px;
+  }
+
+  .security-details-modal .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .security-details-modal .detail-grid dd {
+    margin-bottom: 16px;
+  }
+}

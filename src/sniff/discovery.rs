@@ -122,7 +122,92 @@ pub fn discover_custom_sources(paths: &[String]) -> Vec<LogSource> {
         .collect()
 }
 
+/// Label that marks a container as one Stackdog should not read logs from.
+///
+/// Declaring it in docker-compose is more reliable than inferring our own ID
+/// from `/proc`, since it survives any cgroup layout, network mode, or runtime:
+///
+/// ```yaml
+/// labels:
+///   com.trydirect.stackdog.ignore: "true"
+/// ```
+pub const IGNORE_LABEL: &str = "com.trydirect.stackdog.ignore";
+
+/// Whether a container's labels ask Stackdog to skip it.
+fn is_ignored_by_label(labels: &std::collections::HashMap<String, String>) -> bool {
+    labels
+        .get(IGNORE_LABEL)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Extract a 64-hex container ID from a /proc line, if one is present.
+fn extract_container_id(line: &str) -> Option<String> {
+    line.split(|ch: char| !ch.is_ascii_hexdigit())
+        .find(|token| token.len() == 64)
+        .map(str::to_string)
+}
+
+/// Pull our container ID out of /proc/self/mountinfo contents.
+///
+/// Lines mentioning `/containers/` are preferred: Docker bind-mounts
+/// `/var/lib/docker/containers/<id>/resolv.conf` and friends, so those carry the
+/// real container ID. Plain 64-hex tokens elsewhere in the file can be overlay
+/// layer hashes, which would be the wrong ID.
+fn container_id_from_mountinfo(contents: &str) -> Option<String> {
+    contents
+        .lines()
+        .filter(|line| line.contains("/containers/"))
+        .find_map(extract_container_id)
+        .or_else(|| contents.lines().find_map(extract_container_id))
+}
+
+/// Best-effort detection of the container Stackdog itself runs in.
+///
+/// Reading the hostname is not enough: under `network_mode: host` the container
+/// inherits the host's hostname instead of its own short ID.
+///
+/// Two sources are consulted, because neither covers every setup:
+/// `/proc/self/cgroup` carries the ID under cgroup v1 and under v2 with a host
+/// cgroup namespace, but collapses to a bare `0::/` under v2 with the private
+/// namespace Docker now defaults to. `/proc/self/mountinfo` still names the ID
+/// there. Both live under `/proc/self`, which a process can always read for
+/// itself, and neither is in Docker's masked-path list.
+///
+/// Returns `None` outside containers, and when detection fails; set
+/// `STACKDOG_SELF_CONTAINER_ID` to pin the ID by hand in that case.
+pub fn self_container_id() -> Option<String> {
+    if let Ok(id) = std::env::var("STACKDOG_SELF_CONTAINER_ID") {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+
+    if let Ok(contents) = std::fs::read_to_string("/proc/self/cgroup") {
+        if let Some(id) = contents.lines().find_map(extract_container_id) {
+            return Some(id);
+        }
+    }
+
+    if let Ok(contents) = std::fs::read_to_string("/proc/self/mountinfo") {
+        if let Some(id) = container_id_from_mountinfo(&contents) {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
 /// Discover Docker container log sources
+///
+/// Skips Stackdog's own container: reading our own stdout feeds every internal
+/// error back into the analyzer, which then reports it as a finding.
 pub async fn discover_docker_sources() -> Result<Vec<LogSource>> {
     use crate::docker::DockerClient;
 
@@ -135,8 +220,37 @@ pub async fn discover_docker_sources() -> Result<Vec<LogSource>> {
     };
 
     let containers = client.list_containers(false).await?;
+    let self_id = self_container_id();
+    if self_id.is_none() {
+        log::debug!(
+            "Could not determine own container ID; if Stackdog runs in Docker its own logs \
+             will be analyzed as a source. Set the {} label on the container, or \
+             STACKDOG_SELF_CONTAINER_ID, to prevent that.",
+            IGNORE_LABEL
+        );
+    }
     let sources = containers
         .into_iter()
+        .filter(|c| {
+            if is_ignored_by_label(&c.labels) {
+                log::debug!(
+                    "Skipping container {} — {} label is set",
+                    c.name,
+                    IGNORE_LABEL
+                );
+                return false;
+            }
+            match &self_id {
+                Some(self_id) => {
+                    let is_self = self_id.starts_with(&c.id) || c.id.starts_with(self_id.as_str());
+                    if is_self {
+                        log::debug!("Skipping own container {} in log discovery", c.id);
+                    }
+                    !is_self
+                }
+                None => true,
+            }
+        })
         .map(|c| {
             let name = format!("docker:{}", c.name);
             LogSource::new(LogSourceType::DockerContainer, c.id, name)
@@ -180,6 +294,77 @@ pub async fn discover_all(extra_paths: &[String]) -> Result<Vec<LogSource>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_ignored_by_label_accepts_truthy_values() {
+        for value in ["true", "TRUE", "1", " yes ", "on"] {
+            let labels =
+                std::collections::HashMap::from([(IGNORE_LABEL.to_string(), value.to_string())]);
+            assert!(
+                is_ignored_by_label(&labels),
+                "expected {value} to be truthy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_ignored_by_label_ignores_other_values_and_labels() {
+        let off =
+            std::collections::HashMap::from([(IGNORE_LABEL.to_string(), "false".to_string())]);
+        assert!(!is_ignored_by_label(&off));
+
+        let unrelated = std::collections::HashMap::from([(
+            "com.docker.compose.service".to_string(),
+            "stackdog".to_string(),
+        )]);
+        assert!(!is_ignored_by_label(&unrelated));
+
+        assert!(!is_ignored_by_label(&std::collections::HashMap::new()));
+    }
+
+    #[test]
+    fn test_container_id_from_mountinfo_prefers_container_path() {
+        // Overlay layer hashes appear first and are not container IDs.
+        let mountinfo = "\
+1234 1200 0:100 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+1250 1234 0:60 /containers/6b55165e7b09f91066e8acfd833c69f9b3cf441b948971c93d7f5a15c621ce7f/resolv.conf /etc/resolv.conf rw - ext4 /dev/vda1 rw\n";
+
+        assert_eq!(
+            container_id_from_mountinfo(mountinfo).as_deref(),
+            Some("6b55165e7b09f91066e8acfd833c69f9b3cf441b948971c93d7f5a15c621ce7f")
+        );
+    }
+
+    #[test]
+    fn test_container_id_from_mountinfo_returns_none_on_host() {
+        let mountinfo = "25 30 0:23 / /proc rw,nosuid,nodev,noexec - proc proc rw\n";
+        assert_eq!(container_id_from_mountinfo(mountinfo), None);
+    }
+
+    #[test]
+    fn test_extract_container_id_from_proc_lines() {
+        // cgroup v1
+        assert_eq!(
+            extract_container_id(
+                "11:devices:/docker/a70b8c987795e1f3aa1c0d1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f"
+            )
+            .as_deref(),
+            Some("a70b8c987795e1f3aa1c0d1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f")
+        );
+
+        // cgroup v2 / systemd scope
+        assert_eq!(
+            extract_container_id(
+                "0::/system.slice/docker-a70b8c987795e1f3aa1c0d1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f.scope"
+            )
+            .as_deref(),
+            Some("a70b8c987795e1f3aa1c0d1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f")
+        );
+
+        // Nothing container-shaped on a plain host
+        assert_eq!(extract_container_id("0::/init.scope"), None);
+        assert_eq!(extract_container_id("12:pids:/user.slice"), None);
+    }
     use std::io::Write;
     use tempfile::NamedTempFile;
 

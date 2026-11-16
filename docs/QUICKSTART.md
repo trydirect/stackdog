@@ -308,7 +308,7 @@ cargo test
 
 ## Getting Help
 
-- **GitHub Issues:** https://github.com/vsilent/stackdog/issues
+- **GitHub Issues:** https://github.com/trydirect/stackdog/issues
 - **Gitter:** https://gitter.im/stackdog/community
 - **Email:** info@try.direct
 

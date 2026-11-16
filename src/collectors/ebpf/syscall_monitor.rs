@@ -6,6 +6,8 @@ use crate::collectors::ebpf::container::ContainerDetector;
 use crate::collectors::ebpf::enrichment::EventEnricher;
 use crate::collectors::ebpf::ring_buffer::EventRingBuffer;
 use crate::events::syscall::SyscallEvent;
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
+use anyhow::Context;
 use anyhow::Result;
 
 /// Syscall monitor using eBPF

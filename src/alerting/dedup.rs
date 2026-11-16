@@ -160,6 +160,35 @@ impl AlertDeduplicator {
         false
     }
 
+    /// Check if a raw key is duplicate (bypasses Alert fingerprinting).
+    /// Useful when the caller wants to dedup on a subset of alert fields.
+    pub fn is_duplicate_key(&mut self, key: &str) -> bool {
+        if !self.config.enabled {
+            return false;
+        }
+
+        let fingerprint = Fingerprint::new(key.to_string());
+        let now = Utc::now();
+
+        if let Some(entry) = self.fingerprints.get(&fingerprint) {
+            let elapsed = now - entry.last_seen;
+            if elapsed.num_seconds() as u64 <= self.config.window_seconds {
+                return true;
+            }
+        }
+
+        self.fingerprints.insert(
+            fingerprint,
+            FingerprintEntry {
+                first_seen: now,
+                last_seen: now,
+                count: 1,
+            },
+        );
+
+        false
+    }
+
     /// Check alert and return result with count
     pub fn check(&mut self, alert: &Alert) -> DedupResult {
         self.stats.total_checked += 1;

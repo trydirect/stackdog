@@ -218,6 +218,7 @@ mod tests {
             status: "Running".into(),
             created: "2026-01-01T00:00:00Z".into(),
             network_settings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
         }
     }
 

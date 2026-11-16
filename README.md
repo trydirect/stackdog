@@ -1,6 +1,6 @@
 # Stackdog Security
 
-![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey.svg)
@@ -19,8 +19,10 @@
 
 - **📊 Real-time Monitoring** — eBPF-based syscall monitoring with minimal overhead (<5% CPU)
 - **🔍 Log Sniffing** — Discover, read, and AI-summarize logs from containers and system files
+- **🐘 PHP Shell Detection** — Finds webshells in host and container web roots and bans the clients driving them
+- **🧭 Detector Framework** — Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
 - **🤖 AI/ML Detection** — Candle-powered anomaly detection + OpenAI/Ollama log analysis
-- **🚨 Alert System** — Multi-channel notifications (Slack, email, webhook)
+- **🚨 Alert System** — Multi-channel notifications (Slack, Discord, Telegram, email, webhook)
 - **🔒 Automated Response** — nftables/iptables firewall, container quarantine
 - **📈 Threat Scoring** — Configurable scoring with time-decay
 - **🎯 Signature Detection** — 10+ built-in threat signatures
@@ -30,6 +32,7 @@
 
 ## 📖 Table of Contents
 
+- [Upgrading](#-upgrading)
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
 - [Features](#-features)
@@ -42,17 +45,141 @@
 
 ---
 
+## ⬆️ Upgrading
+
+Notes for anyone moving from **v0.2.4 or earlier**. Nothing here needs to be run
+by hand, but two changes alter behaviour you may be relying on.
+
+### IP banning is stricter about who it accuses
+
+Earlier versions could ban addresses that were merely present in a log the
+analyzer was reading:
+
+- a finding whose sample line named no address caused **every** address in that
+  batch to be banned;
+- descriptions containing `frequent access`, `targeting`, `scanning`,
+  `possible attack` or `rejected connection` counted as grounds for a ban;
+- an auth-log line naming both client and server banned both;
+- browser versions in User-Agent strings (`Chrome/122.0.0.0`) parsed as
+  addresses and were banned as `122.0.0.0`.
+
+Bans now follow only the evidence: the sample line, then the description. A
+finding that accuses nobody raises an alert and stops there.
+
+Three settings are worth reviewing after upgrading:
+
+| Variable | Default | Why |
+|---|---|---|
+| `STACKDOG_IP_BAN_ALLOWLIST` | empty | Addresses never banned. Put load balancers, health checkers and this host's own public address here — banning them takes the service down. |
+| `STACKDOG_TRUSTED_PROXY_RANGES` | RFC1918 only | A public-facing proxy is **not** covered by the defaults, so its own address is banned instead of the client behind it. Add it as `<ip>/32`. |
+| `STACKDOG_IP_BAN_MAX_PER_MINUTE` | `10` | Ceiling on blocks per minute. A burst is more often a misread log than a crowd of attackers. `0` disables it. |
+
+To ban only on deterministic detectors and never on analyzer prose, set
+`STACKDOG_IP_BAN_FROM_AI_FINDINGS=false`.
+
+### Infrastructure addresses can no longer be banned
+
+In a microservice stack the ban plane used to turn on the application itself:
+
+- a service calling its peers over published ports or a load balancer logged
+  the peer's address, and a wrong ban dropped it in `INPUT` **and** `FORWARD` —
+  the service lost its own components;
+- `stackdog ban-ip` and the AI `ban_ip` tool accepted any string, CIDR ranges
+  included, and skipped the allowlist — `iptables -s 172.16.0.0/12 -j DROP`
+  would take down a Docker network;
+- a crash between the firewall write and the database write left a DROP rule
+  nothing would ever remove, and there was no way to clear it.
+
+Every ban path now refuses addresses that belong to you: CIDR ranges, private
+and loopback addresses, allowlist entries, and the addresses of this host and
+its containers (`STACKDOG_IP_BAN_PROTECT_LOCAL_IPS`, on by default). Rules are
+tagged and reconciled against the database on every start.
+
+If the network is blocked and you need it back **now**:
+
+```bash
+stackdog firewall list          # what is blocking what
+stackdog unban <ip>             # release one address, rules or no rules
+stackdog unban --all            # remove every Stackdog rule, release every ban
+stackdog firewall reconcile     # drop orphans, restore missing rules
+```
+
+Two related changes: bare `401` lines no longer count as a brute-force attempt,
+and the mail abuse guard quarantines a container only when it is actually
+observing outbound SMTP (`STACKDOG_MAIL_GUARD_REQUIRE_SMTP`, on by default) —
+the traffic heuristic alone matches ordinary service chatter, and quarantine is
+a network disconnect that needs manual release.
+
+### The offense table is rewritten on first start
+
+`ip_offenses` held one row per detection with `offense_count` stuck at `1`, so
+the table grew with every hit and one ban left several rows behind — which is
+why a single expiry emitted several "Released IP ban" notifications.
+
+The first start after upgrading collapses each `(ip_address, source_type)` group
+into one row carrying the tally and the earliest sighting, keeping a live block
+over a released one, then enforces the layout with a unique index. It runs once,
+automatically, and is skipped on later starts.
+
+**Back up the database first** if its history matters to you:
+
+```bash
+docker exec <stackdog> sqlite3 /data/stackdog.db ".backup '/data/stackdog.pre-upgrade.db'"
+```
+
+### Stackdog no longer reads its own logs
+
+Running in Docker, it used to analyze its own output and report its own errors
+as findings. It now skips its own container. Detection works without
+configuration, but under `network_mode: host` the surest signal is a label:
+
+```yaml
+labels:
+  com.trydirect.stackdog.ignore: "true"
+```
+
+The same label excludes any other container you would rather not analyze.
+
+### The dashboard has its own image
+
+`trydirect/stackdog-ui:latest` is published alongside the backend. Pointing a
+dashboard service at `trydirect/stackdog:latest` starts a second copy of the
+backend instead, listening on 5000 while port 3000 maps to nothing.
+
+The API address is read from the environment at container start, so changing it
+is a restart rather than a rebuild:
+
+```yaml
+stackdog-ui:
+  image: trydirect/stackdog-ui:latest
+  environment:
+    STACKDOG_API_URL: http://<host>:5000/api
+    STACKDOG_WS_URL: ws://<host>:5000/ws
+  ports:
+    - "3000:80"
+```
+
+Build args named `REACT_APP_*` never reached the bundle in earlier versions, so
+any address configured that way was silently ignored.
+
+### Alerts can link back to the dashboard
+
+Set `STACKDOG_UI_URL` and every notification carries a link to the alert that
+fired. Left unset, notifications look as they did before.
+
+---
+
 ## 🚀 Quick Start
 
 ### Install with curl (Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vsilent/stackdog/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash
 ```
 
 Pin a specific version:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vsilent/stackdog/main/install.sh | sudo bash -s -- --version v0.2.1
+curl -fsSL https://raw.githubusercontent.com/trydirect/stackdog/main/install.sh | sudo bash -s -- --version v0.3.1
 ```
 
 If your repository has no published stable release yet, use `--version` explicitly.
@@ -61,7 +188,7 @@ If your repository has no published stable release yet, use `--version` explicit
 
 ```bash
 # Clone repository
-git clone https://github.com/vsilent/stackdog
+git clone https://github.com/trydirect/stackdog
 cd stackdog
 
 # Start the HTTP server (default)
@@ -82,7 +209,8 @@ docker volume create stackdog-data
 
 docker run --rm -it \
   --name stackdog \
-  -p 5000:5000 \
+  --network host \
+  --cap-add=NET_ADMIN \
   -e APP_HOST=0.0.0.0 \
   -e APP_PORT=5000 \
   -e DATABASE_URL=/data/stackdog.db \
@@ -90,6 +218,8 @@ docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
   trydirect/stackdog:latest
 ```
+
+> **Note:** `--network host` and `--cap-add=NET_ADMIN` are required for IP banning (iptables/nftables) to work. Without them, firewall rules from inside the container cannot affect host traffic.
 
 Then open another shell and hit the API:
 
@@ -126,7 +256,8 @@ docker build -f docker/backend/Dockerfile -t stackdog-local .
 
 docker run --rm -it \
   --name stackdog-local \
-  -p 5000:5000 \
+  --network host \
+  --cap-add=NET_ADMIN \
   -e APP_HOST=0.0.0.0 \
   -e APP_PORT=5000 \
   -e DATABASE_URL=/data/stackdog.db \
@@ -150,9 +281,11 @@ This starts:
 
 The compose stack uses:
 
-- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, and mounts `/var/run/docker.sock`
+- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, mounts `/var/run/docker.sock`, uses `network_mode: host`, and adds `NET_ADMIN` capability for IP banning
 - `stackdog-ui` service — builds the React app and serves it with Nginx
 - `stackdog-data` volume — persists the SQLite database between restarts
+
+> **Prerequisite for IP banning:** The `network_mode: host` and `cap_add: NET_ADMIN` settings are required so that `iptables`/`nftables` rules applied inside the container affect the host's network stack. Without them, IP ban firewall rules cannot reach host traffic.
 
 To stop it:
 
@@ -164,20 +297,28 @@ docker compose -f docker-compose.app.yml down
 
 ```bash
 # Discover and analyze logs (one-shot)
-cargo run -- sniff --once
+stackdog -- sniff --once
 
 # Continuous monitoring with AI analysis
-cargo run -- sniff --ai-provider openai
+stackdog -- sniff --ai-provider openai
 
 # Use Ollama (local LLM)
 STACKDOG_AI_API_URL=http://localhost:11434/v1 cargo run -- sniff
 
 # Consume mode: archive to zstd + purge originals
-cargo run -- sniff --consume --output ./log-archive
+stackdog -- sniff --consume --output ./log-archive
 
 # Add custom log sources
-cargo run -- sniff --sources "/var/log/myapp.log,/opt/service/logs"
+stackdog -- sniff --sources "/var/log/myapp.log,/opt/service/logs"
 ```
+
+The built-in sniff pipeline now includes Rust-native detectors for:
+
+- web attack indicators such as SQL injection probes, path traversal probes, login brute force, and webshell-style requests
+- exfiltration-style indicators such as suspicious SMTP/attachment activity and large outbound transfer hints in logs
+- reverse shell behavior, sensitive file access, cloud metadata / SSRF access, exfiltration chains, and secret leakage in logs
+- Wazuh-inspired file integrity monitoring for explicit paths configured with `STACKDOG_FIM_PATHS=/etc/ssh/sshd_config,/app/.env`
+- Wazuh-inspired configuration assessment via `STACKDOG_SCA_PATHS`, package inventory heuristics via `STACKDOG_PACKAGE_INVENTORY_PATHS`, Docker posture audits, and improved RFC3164/RFC5424 syslog parsing
 
 ### Use as Library
 
@@ -226,7 +367,7 @@ docker compose -f docker-compose.app.yml up --build
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Stackdog Security Core                       │
+│                     Stackdog Security Core                      │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
 │  │  Collectors │  │   ML/AI     │  │   Response Engine       │  │
@@ -236,12 +377,12 @@ docker compose -f docker-compose.app.yml up --build
 │  │ • Docker    │  │   Detection │  │ • Auto-response         │  │
 │  │   Events    │  │ • Scoring   │  │ • Alerting              │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────┐│
-│  │  Log Sniffing                                               ││
-│  │  • Auto-discovery (system logs, Docker, custom paths)       ││
-│  │  • AI summarization (OpenAI/Ollama/Candle)                  ││
-│  │  • zstd compression, dedup, log purge                       ││
-│  └──────────────────────────────────────────────────────────────┘│
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Log Sniffing                                             │  │
+│  │  • Auto-discovery (system logs, Docker, custom paths)     │  │
+│  │  • AI summarization (OpenAI/Ollama/Candle)                │  │
+│  │  • zstd compression, dedup, log purge                     │  │
+│  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -361,6 +502,8 @@ manager.acknowledge_alert(&alert.id())?;
 **Notification Channels:**
 - Console (logging)
 - Slack webhooks
+- Discord webhooks
+- Telegram bot (alerts only)
 - Email (SMTP)
 - Generic webhooks
 
@@ -426,6 +569,139 @@ curl -X POST http://localhost:5000/api/logs/sources \
 curl http://localhost:5000/api/logs/summaries?source_id=myapp
 ```
 
+### 8. PHP Shell Detection
+
+Every sniff pass reads the PHP files in web roots and scores them for webshell
+code: request input reaching `eval`/`system`/`assert`, `eval` of decoded data,
+`preg_replace` with `/e`, request input called as a function, and markers of
+known families (c99, r57, WSO, b374k, p0wny, China Chopper). One keyword never
+flags a file — WordPress calls `base64_decode`, Composer calls `proc_open` — the
+score does. PHP in an upload directory, and PHP hidden in an image there, add to
+it.
+
+**Where it looks:**
+- host paths in `STACKDOG_PHPSHELL_PATHS`;
+- PHP containers, found on their own: by name or image
+  (`STACKDOG_PHPSHELL_CONTAINERS`), or by a mount at `/var/www`, `/srv`, `/app`
+  or `/usr/share/nginx/html`. Mounted docroots are read at their host source,
+  docroots baked into the image through the overlay `MergedDir`.
+
+Running in Docker, Stackdog reads both through a read-only mount of the host:
+
+```yaml
+environment:
+  STACKDOG_HOST_ROOT: /host
+  STACKDOG_PHPSHELL_PATHS: /var/www
+volumes:
+  - /:/host:ro
+```
+
+**What it does:**
+
+| Finding | When | Action |
+|---|---|---|
+| `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
+| `web.php-shell-access` | any request to a flagged upload whose URL goes through `uploads/`; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
+| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only, never a ban — banning visitors of an infected page would ban its audience |
+
+Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
+protected local addresses and the per-minute ceiling all apply. Stackdog never
+deletes or moves the file; removing it is your call.
+
+Add signatures without a rebuild by pointing `STACKDOG_PHPSHELL_SIGNATURES` at
+a JSON file:
+
+```json
+[{"id": "acme-shell", "description": "ACME shell marker",
+  "pattern": "acme_shell_v\\d", "weight": "strong"}]
+```
+
+#### PHP2Shell exposure (CVE-2026-109618, CVE-2026-109619)
+
+PHP2Shell is unauthenticated remote code execution in the PHP interpreter. The
+fix is upgrading PHP; Stackdog tells you where you still have to.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.php2shell` | a PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older | Critical alert for upstream builds (official `php` images, read from `PHP_VERSION`); Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number |
+| `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1–2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
+| `web.php2shell-attempt` | the exploit's out-of-memory step, with the client address: Apache `[client …] PHP Fatal error: Allowed memory size … in Unknown on line 0`; nginx `upstream sent unexpected FastCGI record … client: …, request: "POST …"` (php-fpm); or the public scanner's `php2shell-…` User-Agent | alert + an offense per line, so a client causing 5 within the ban window is banned in the pass that reads them |
+
+The version check reads `php8.x-common` (Debian, Ubuntu) and `php8x-common` or `php8x` (Alpine)
+from the package database on the host and inside each running container, and
+`PHP_VERSION` from container environments. RPM-based hosts are not covered.
+The version and crash findings name no client, so they never ban. Turn the
+version check off with `STACKDOG_PHP_VERSION_CHECK_ENABLED=false`.
+
+`web.php2shell-attempt` bans. Every known PHP2Shell variant pushes PHP past
+`memory_limit` with a multipart POST; when that happens while PHP is still
+parsing the request, the error says `in Unknown on line 0`. An application
+running out of memory names its script and line instead, and is never an
+attempt. The two log formats were reproduced against `php:8.3-apache` and
+`php:8.3-fpm` behind nginx with a benign oversized form POST, not taken from
+exploit traffic. Limits:
+
+- the exploit can succeed in a few requests, so a ban mostly stops repeats and
+  scanners, not a fast first attempt;
+- the web server error log must be read: Docker container logs are, host logs
+  such as `/var/log/apache2/error.log` and `/var/log/nginx/error.log` go in
+  `STACKDOG_LOG_SOURCES`;
+- behind a CDN or proxy, the error log must record the real client address;
+- the same lines have rare innocent causes. A user posting a giant form to a
+  PHP with a very low `memory_limit` hits the Apache rule (at the default
+  128M that takes a body over 128 MB, which `client_max_body_size` usually
+  stops first). A buggy extension crashing php-fpm on an upload hits the
+  nginx rule. Either way it takes 5 in 5 minutes from one address;
+- the scanner User-Agent comes from one report (Fastly, via Brandefense). If
+  the scanner changes it, that rule goes quiet; the two out-of-memory rules
+  do not depend on it.
+
+Crash lines come from php-fpm and Apache error logs too; add host logs such as
+`/var/log/php8.3-fpm.log`. Stackdog cannot patch PHP: upgrading is the fix.
+
+#### SSHole exposure (CVE-2026-123158)
+
+SSHole is an authentication bypass in OpenSSH on musl systems with PAM disabled
+(Alpine's default server): an oversized password logs the attacker into accounts
+whose password field is `*`, such as root. Fixed in OpenSSH 10.6p2.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.sshole` | an `openssh-server` build older than 10.6p2 in the apk package database, on the host or in a running container | Critical alert naming the version; upgrade to 10.6p2 (`10.6_p2` on Alpine) and restart sshd. Never bans: a version names no attacker |
+| `ssh.password-login` | a password login to a key-only account (root, alpine by default) | alert + an immediate ban on the first line (allowlists and protected addresses still apply). One login is already a foothold: waiting for five offenses would let the intruder switch the monitoring off |
+
+The version check reads apk databases only: musl is the affected half of the
+configuration, and the PAM flavor (`openssh-server-pam`) and glibc
+distributions are not affected by the CVE. The log half reads the auth and
+syslog sources the brute-force bans come from — on Alpine, sshd logs to
+`/var/log/messages`. Key-only accounts are `root` and `alpine`; add yours with
+`STACKDOG_SSHOLE_KEYONLY_USERS`. Stackdog cannot patch OpenSSH: upgrading is
+the fix.
+
+#### CVE watch (every new CVE, from the public feeds)
+
+The detectors above hardcode what they know. `vuln.cve-watch` asks the public
+databases instead, so a CVE published tonight is checked on the next refresh
+without a Stackdog release. Every package on the host and in running
+containers is matched against [OSV](https://osv.dev) (Debian and Ubuntu
+versions server-side; Alpine's without the `-rN` package revision), and the
+results are cross-referenced with CISA's KEV catalog: known-exploited findings
+are Critical, the rest carry the advisory's own severity label.
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.cve-watch` | a package version that OSV reports vulnerabilities for, newly matched since the last alert | alert once per package and CVE, KEV entries first. Never bans: a version names no attacker |
+
+Each package is re-queried at least every 24 hours, which is what catches
+newly published CVEs; answers are cached in the database so a restart does not
+re-query everything. Alerts are capped at 50 per pass, worst first. Honest
+limits: a match says a fix is missing, not that a machine is exploitable —
+distributions backport fixes, and configuration-dependent CVEs do not survive
+being flattened into a version range, so treat findings as "check your
+vendor's advisory". Very fresh CVEs may not be in the feeds yet; the
+specialized detectors above cover the ones we know in detail.
+`STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
+
 ---
 
 ## 📦 Installation
@@ -457,7 +733,7 @@ dnf install sqlite-devel openssl-devel clang llvm
 ### Build from Source
 
 ```bash
-git clone https://github.com/vsilent/stackdog
+git clone https://github.com/trydirect/stackdog
 cd stackdog
 cargo build --release
 ```
@@ -608,9 +884,9 @@ stackdog/
 
 ```bash
 # 1. Clone and setup
-git clone https://github.com/vsilent/stackdog
+git clone https://github.com/trydirect/stackdog
 cd stackdog
-cp .env.sample .env
+cp .env.sample .env      # or run `stackdog init` once built
 
 # 2. Build
 cargo build
@@ -638,6 +914,14 @@ sudo cargo test --lib -- firewall::
 bpftool version
 uname -r  # Should be 4.19+
 ```
+
+### Where the config lives
+
+`stackdog` reads settings from three places, nearest first: real environment
+variables, then `.env` in the working directory, then `~/.config/stackdog/.env`
+(`$XDG_CONFIG_HOME/stackdog/.env` when set). Every setting has a default, so
+the app runs with no config at all. `stackdog init` writes a starter file to
+the config directory and never overwrites an existing one.
 
 ---
 
@@ -723,7 +1007,6 @@ copies of the Software...
 
 ### Inspired By
 
-- [Portainer](https://github.com/portainer/portainer) - Docker management UI
 - [Falco](https://github.com/falcosecurity/falco) - Cloud-native runtime security
 - [Sysdig](https://github.com/draios/sysdig) - System visibility
 
@@ -741,12 +1024,11 @@ copies of the Software...
 
 - **Project Lead:** Vasili Pascal
 - **Email:** info@try.direct
-- **Twitter:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
-- **Gitter:** [stackdog/community](https://gitter.im/stackdog/community)
-- **GitHub:** [vsilent/stackdog](https://github.com/vsilent/stackdog)
+- **X:** [@VasiliiPascal](https://twitter.com/VasiliiPascal)
+- **GitHub:** [trydirect/stackdog](https://github.com/trydirect/stackdog)
 
 ---
 
 <p align="center">
-<strong>🐕 Built with ❤️ using Rust</strong>
+<strong>Built with ❤️ using Rust</strong>
 </p>

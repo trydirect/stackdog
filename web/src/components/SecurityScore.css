@@ -1,85 +1,77 @@
 .security-score-card {
-  border: none;
+  border: 1px solid #dde3eb;
   border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: #fff;
   height: 100%;
+  color: #172b45;
+}
+
+.security-score-card .card-body {
+  padding: 24px;
 }
 
 .security-score-card .card-title {
-  font-size: 0.875rem;
-  color: #7f8c8d;
-  margin-bottom: 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #526379;
+  margin-bottom: 16px;
 }
 
-.gauge-container {
+.security-score-card .gauge-container {
   display: flex;
   justify-content: center;
-  align-items: center;
-  padding: 1rem 0;
+  padding: 4px 0;
 }
 
-.gauge {
+.security-score-card .gauge {
   position: relative;
   width: 150px;
   height: 75px;
   overflow: hidden;
 }
 
-.gauge-background {
+.security-score-card .gauge-background {
   position: absolute;
   width: 150px;
   height: 150px;
   border-radius: 50%;
-  background: conic-gradient(
-    from -90deg,
-    #e74c3c 0deg,
-    #e67e22 60deg,
-    #f39c12 120deg,
-    #27ae60 180deg,
-    #ecf0f1 180deg
-  );
-  transform: rotate(-90deg);
+  background: conic-gradient(from 270deg, #b42318 0deg, #c2410c 60deg, #b7790b 120deg, #047857 180deg, transparent 180deg);
 }
 
-.gauge-fill {
+.security-score-card .gauge-fill {
   position: absolute;
-  width: 150px;
-  height: 150px;
-  border-radius: 50%;
-  background: conic-gradient(
-    from -90deg,
-    #27ae60 0deg,
-    #27ae60 var(--rotation, 0deg),
-    transparent var(--rotation, 0deg)
-  );
-  transform-origin: center;
-  transition: transform 0.5s ease-out;
+  left: 73px;
+  bottom: 75px;
+  width: 4px;
+  height: 74px;
+  border-radius: 2px;
+  background: #172b45;
+  transform-origin: 50% 100%;
 }
 
-.gauge-cover {
+.security-score-card .gauge-cover {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 120px;
-  height: 120px;
+  top: 18px;
+  left: 18px;
+  width: 114px;
+  height: 114px;
   border-radius: 50%;
-  background: white;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.gauge-value {
-  font-size: 2.5rem;
-  font-weight: 700;
-  color: #2c3e50;
-}
-
-.score-label {
+  background: #fff;
+  padding-top: 14px;
   text-align: center;
-  font-size: 1.25rem;
-  font-weight: 600;
-  margin-top: 0.5rem;
-  transition: color 0.3s;
+}
+
+.security-score-card .gauge-value {
+  font-size: 2.25rem;
+  line-height: 1.2;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: #172b45;
+}
+
+.security-score-card .score-label {
+  text-align: center;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  margin-top: 8px;
 }

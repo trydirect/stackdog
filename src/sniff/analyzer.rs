@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::sniff::reader::LogEntry;
+use crate::tools::ToolRegistry;
 
 const MAX_PROMPT_LINES: usize = 200;
 const MAX_PROMPT_CHARS: usize = 16_000;
@@ -36,10 +37,18 @@ pub struct LogAnomaly {
     pub description: String,
     pub severity: AnomalySeverity,
     pub sample_line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detector_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detector_family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_action: Option<String>,
 }
 
 /// Severity of a detected anomaly
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnomalySeverity {
     Low,
     Medium,
@@ -59,10 +68,22 @@ impl std::fmt::Display for AnomalySeverity {
 }
 
 /// Trait for AI-powered log analysis
+// async-trait expands to #[must_use] fns returning Result; newer clippy
+// flags that Result already implies must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LogAnalyzer: Send + Sync {
     /// Summarize a batch of log entries
     async fn summarize(&self, entries: &[LogEntry]) -> Result<LogSummary>;
+
+    /// Summarize with tool-use support (falls back to summarize by default)
+    async fn summarize_with_tools(
+        &self,
+        entries: &[LogEntry],
+        _tools: &ToolRegistry,
+    ) -> Result<LogSummary> {
+        self.summarize(entries).await
+    }
 }
 
 /// OpenAI-compatible API backend (works with OpenAI, Ollama, vLLM, etc.)
@@ -70,6 +91,7 @@ pub struct OpenAiAnalyzer {
     api_url: String,
     api_key: Option<String>,
     model: String,
+    max_tokens: u32,
     client: reqwest::Client,
 }
 
@@ -85,12 +107,32 @@ impl OpenAiAnalyzer {
         }
     }
 
-    pub fn new(api_url: String, api_key: Option<String>, model: String) -> Self {
+    pub fn new(
+        api_url: String,
+        api_key: Option<String>,
+        model: String,
+        timeout_secs: u64,
+        max_tokens: u32,
+    ) -> Self {
+        let mut builder = reqwest::Client::builder();
+        if timeout_secs > 0 {
+            builder = builder.timeout(std::time::Duration::from_secs(timeout_secs));
+        }
+        let client = builder.build().unwrap_or_else(|err| {
+            log::warn!(
+                "Failed to build HTTP client with {}s timeout ({}), falling back to default",
+                timeout_secs,
+                err
+            );
+            reqwest::Client::new()
+        });
+
         Self {
             api_url,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            max_tokens,
+            client,
         }
     }
 
@@ -237,6 +279,7 @@ struct LlmAnomaly {
     description: Option<String>,
     severity: Option<String>,
     sample_line: Option<String>,
+    suggested_action: Option<String>,
 }
 
 /// OpenAI chat completion response
@@ -248,12 +291,34 @@ struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct ChatMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCallDelta>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+/// Tool call as returned by the AI in a response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ToolCallDelta {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: FunctionCallDelta,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FunctionCallDelta {
+    name: String,
+    arguments: String,
 }
 
 /// Extract JSON from LLM response, handling markdown fences, preamble text, etc.
@@ -288,6 +353,87 @@ fn extract_json(content: &str) -> &str {
     trimmed
 }
 
+/// Attempt to repair truncated JSON by closing open braces/brackets and
+/// trimming incomplete trailing string values.  Returns `None` if the
+/// input doesn't look like JSON at all.
+fn repair_truncated_json(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let start = trimmed.find('{')?;
+    let json = &trimmed[start..];
+
+    // Already valid — nothing to repair.
+    if serde_json::from_str::<serde_json::Value>(json).is_ok() {
+        return None;
+    }
+
+    // Count unmatched openers to decide how many closers we need.
+    let mut depth: i32 = 0; // braces
+    let mut bracket_depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for ch in json.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            _ => {}
+        }
+    }
+
+    // If we're inside a string when we ran out of input, close it first.
+    let mut repair = String::from(json);
+    if in_string {
+        repair.push('"');
+    }
+
+    // Close any incomplete array entries with a trailing `]` if needed.
+    // (We don't try to be perfect — just enough for serde to parse the
+    // fields that *were* fully written.)
+    for _ in 0..bracket_depth.max(0) {
+        repair.push(']');
+    }
+    for _ in 0..depth.max(0) {
+        repair.push('}');
+    }
+
+    // If the last meaningful token before our closers is a trailing comma
+    // or colon, strip it — serde will reject `{"a":}` or `{"a":1,}`.
+    // We do a simple scan from the end ignoring the closers we just added.
+    let closers_len =
+        (bracket_depth.max(0) as usize) + (depth.max(0) as usize) + if in_string { 1 } else { 0 };
+    let body_end = repair.len() - closers_len;
+    let body = &repair[..body_end];
+    let trimmed_body = body.trim_end();
+    if trimmed_body.ends_with(',') || trimmed_body.ends_with(':') {
+        let new_body = &trimmed_body[..trimmed_body.len() - 1];
+        repair = format!("{}{}", new_body.trim_end(), &repair[body_end..]);
+    }
+
+    // Only return the repair if it actually parses.
+    if serde_json::from_str::<serde_json::Value>(&repair).is_ok() {
+        Some(repair)
+    } else {
+        None
+    }
+}
+
 /// Parse LLM severity string to enum
 fn parse_severity(s: &str) -> AnomalySeverity {
     match s.to_lowercase().as_str() {
@@ -307,10 +453,28 @@ fn parse_llm_response(source_id: &str, entries: &[LogEntry], raw_json: &str) -> 
     );
     log::trace!("Raw LLM response:\n{}", raw_json);
 
-    let analysis: LlmAnalysis = serde_json::from_str(raw_json).context(format!(
-        "Failed to parse LLM response as JSON. Response starts with: {}",
-        &raw_json[..raw_json.len().min(200)]
-    ))?;
+    let analysis: LlmAnalysis = match serde_json::from_str(raw_json) {
+        Ok(a) => a,
+        Err(e) => {
+            // Try to repair truncated JSON before giving up.
+            if let Some(repaired) = repair_truncated_json(raw_json) {
+                log::warn!(
+                    "LLM response was truncated ({}); repaired to {} bytes",
+                    e,
+                    repaired.len()
+                );
+                serde_json::from_str(&repaired).context(format!(
+                    "Failed to parse repaired LLM response. Original starts with: {}",
+                    &raw_json[..raw_json.len().min(200)]
+                ))?
+            } else {
+                return Err(e).context(format!(
+                    "Failed to parse LLM response as JSON. Response starts with: {}",
+                    &raw_json[..raw_json.len().min(200)]
+                ));
+            }
+        }
+    };
 
     log::debug!(
         "LLM analysis parsed — summary: {:?}, errors: {:?}, warnings: {:?}, anomalies: {}",
@@ -328,6 +492,10 @@ fn parse_llm_response(source_id: &str, entries: &[LogEntry], raw_json: &str) -> 
             description: a.description.unwrap_or_default(),
             severity: parse_severity(&a.severity.unwrap_or_default()),
             sample_line: a.sample_line.unwrap_or_default(),
+            detector_id: None,
+            detector_family: None,
+            confidence: None,
+            suggested_action: a.suggested_action,
         })
         .collect();
 
@@ -367,9 +535,12 @@ fn entry_time_range(entries: &[LogEntry]) -> (DateTime<Utc>, DateTime<Utc>) {
     (start, end)
 }
 
+const MAX_TOOL_ROUNDS: usize = 5;
+
 #[async_trait]
 impl LogAnalyzer for OpenAiAnalyzer {
     async fn summarize(&self, entries: &[LogEntry]) -> Result<LogSummary> {
+        // ... existing implementation (unchanged) ...
         if entries.is_empty() {
             log::debug!("OpenAiAnalyzer: no entries to analyze, returning empty summary");
             return Ok(LogSummary {
@@ -402,14 +573,19 @@ impl LogAnalyzer for OpenAiAnalyzer {
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a log analysis assistant. Analyze logs and return structured JSON."
+                    "content": "You are a log analysis assistant. Analyze logs and return structured JSON. Be concise — limit summary to 1-2 sentences, max 5 key events, max 5 anomalies.\n\n\
+        When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
+        - \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
+        - \"stackdog firewall add --public-ports 8080/tcp\"\n\
+        Only include suggested_action when there is a clear, actionable mitigation."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_tokens": self.max_tokens
         });
 
         let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
@@ -459,7 +635,7 @@ impl LogAnalyzer for OpenAiAnalyzer {
         let content = completion
             .choices
             .first()
-            .map(|c| c.message.content.clone())
+            .and_then(|c| c.message.content.clone())
             .unwrap_or_default();
 
         log::debug!(
@@ -473,6 +649,143 @@ impl LogAnalyzer for OpenAiAnalyzer {
         log::debug!("Extracted JSON ({} chars)", json_str.len());
 
         parse_llm_response(source_id, entries, json_str)
+    }
+
+    async fn summarize_with_tools(
+        &self,
+        entries: &[LogEntry],
+        tools: &ToolRegistry,
+    ) -> Result<LogSummary> {
+        if entries.is_empty() {
+            return self.summarize(entries).await;
+        }
+
+        let prompt = Self::build_prompt(entries);
+        let source_id = entries[0].source_id.clone();
+
+        let system_msg = serde_json::json!({
+            "role": "system",
+            "content": "You are a log analysis assistant. Analyze logs and return structured JSON. Be concise — limit summary to 1-2 sentences, max 5 key events, max 5 anomalies.\n\n\
+        When you detect an attack with an identifiable source IP, include a \"suggested_action\" field in the anomaly with a CLI command the operator can run to mitigate it. Examples:\n\
+        - \"stackdog ban-ip 167.233.9.19 --duration 30m --reason 'credential scanning'\"\n\
+        - \"stackdog firewall add --public-ports 8080/tcp\"\n\
+        Only include suggested_action when there is a clear, actionable mitigation.\n\n\
+        You have access to tools. Use them to gather context before making decisions — check if an IP is already banned, inspect container posture, or run detectors on suspicious lines."
+        });
+
+        let user_msg = serde_json::json!({
+            "role": "user",
+            "content": prompt
+        });
+
+        let tool_defs = tools.definitions();
+        let mut messages: Vec<serde_json::Value> = vec![system_msg, user_msg];
+
+        let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
+
+        for round in 0..MAX_TOOL_ROUNDS {
+            log::debug!("Tool-use round {}/{}", round + 1, MAX_TOOL_ROUNDS);
+
+            let request_body = serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+                "tools": tool_defs,
+                "tool_choice": "auto",
+                "temperature": 0.1,
+                "max_tokens": self.max_tokens
+            });
+
+            let mut req = self
+                .client
+                .post(&url)
+                .header("Content-Type", "application/json");
+
+            if let Some(ref key) = self.api_key {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+
+            let response = req
+                .json(&request_body)
+                .send()
+                .await
+                .context("Failed to send request to AI API")?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("AI API returned status {}: {}", status, body);
+            }
+
+            let raw_body = response
+                .text()
+                .await
+                .context("Failed to read AI API response body")?;
+
+            let completion: ChatCompletionResponse =
+                serde_json::from_str(&raw_body).context("Failed to parse AI API response")?;
+
+            let choice = match completion.choices.into_iter().next() {
+                Some(c) => c,
+                None => anyhow::bail!("AI API returned no choices"),
+            };
+
+            // If the AI wants to call tools
+            if choice.finish_reason.as_deref() == Some("tool_calls") {
+                if let Some(tool_calls) = &choice.message.tool_calls {
+                    // Append the assistant message with tool_calls
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "tool_calls": tool_calls.iter().map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            })
+                        }).collect::<Vec<_>>()
+                    }));
+
+                    // Execute each tool and append results
+                    for tc in tool_calls {
+                        let call = crate::tools::types::ToolCall {
+                            id: tc.id.clone(),
+                            call_type: "function".into(),
+                            function: crate::tools::types::FunctionCall {
+                                name: tc.function.name.clone(),
+                                arguments: tc.function.arguments.clone(),
+                            },
+                        };
+                        let result = tools.execute(&call).await;
+                        log::debug!(
+                            "Tool {} returned {} chars",
+                            tc.function.name,
+                            result.content.len()
+                        );
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": result.tool_call_id,
+                            "content": result.content
+                        }));
+                    }
+                    continue; // next round
+                }
+            }
+
+            // Final response — parse as LogSummary
+            let content = choice.message.content.unwrap_or_default();
+            log::debug!(
+                "Tool-use final response ({} chars): {}",
+                content.len(),
+                &content[..content.len().min(200)]
+            );
+
+            let json_str = extract_json(&content);
+            return parse_llm_response(&source_id, entries, json_str);
+        }
+
+        anyhow::bail!("AI exceeded max tool-call rounds ({})", MAX_TOOL_ROUNDS)
     }
 }
 
@@ -554,6 +867,10 @@ impl LogAnalyzer for PatternAnalyzer {
                     ),
                     severity: AnomalySeverity::High,
                     sample_line: sample.line.clone(),
+                    detector_id: None,
+                    detector_family: None,
+                    confidence: None,
+                    suggested_action: None,
                 });
             }
         }
@@ -832,8 +1149,13 @@ mod tests {
 
     #[test]
     fn test_openai_analyzer_new() {
-        let analyzer =
-            OpenAiAnalyzer::new("http://localhost:11434/v1".into(), None, "llama3".into());
+        let analyzer = OpenAiAnalyzer::new(
+            "http://localhost:11434/v1".into(),
+            None,
+            "llama3".into(),
+            300,
+            2048,
+        );
         assert_eq!(analyzer.api_url, "http://localhost:11434/v1");
         assert!(analyzer.api_key.is_none());
         assert_eq!(analyzer.model, "llama3");
@@ -841,8 +1163,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_openai_analyzer_empty_entries() {
-        let analyzer =
-            OpenAiAnalyzer::new("http://localhost:11434/v1".into(), None, "llama3".into());
+        let analyzer = OpenAiAnalyzer::new(
+            "http://localhost:11434/v1".into(),
+            None,
+            "llama3".into(),
+            300,
+            2048,
+        );
         let summary = analyzer.summarize(&[]).await.unwrap();
         assert_eq!(summary.total_entries, 0);
     }
@@ -862,11 +1189,63 @@ mod tests {
                 description: "Test anomaly".into(),
                 severity: AnomalySeverity::Medium,
                 sample_line: "WARN: something".into(),
+                detector_id: None,
+                detector_family: None,
+                confidence: None,
+                suggested_action: None,
             }],
         };
         let json = serde_json::to_string(&summary).unwrap();
         let deserialized: LogSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.total_entries, 10);
         assert_eq!(deserialized.anomalies[0].severity, AnomalySeverity::Medium);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_basic() {
+        // Simulates a truncated LLM response — missing closing braces
+        let truncated = r#"{"summary": "Multiple errors detected", "error_count": 42"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["summary"], "Multiple errors detected");
+        assert_eq!(parsed["error_count"], 42);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_with_trailing_comma() {
+        let truncated = r#"{"summary": "Test", "error_count": 5, "#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["summary"], "Test");
+        assert_eq!(parsed["error_count"], 5);
+    }
+
+    #[test]
+    fn test_repair_truncated_json_mid_string() {
+        let truncated = r#"{"summary": "Multiple failed connection at"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        // The string value will be truncated but still parseable
+        assert!(parsed["summary"].as_str().unwrap().starts_with("Multiple"));
+    }
+
+    #[test]
+    fn test_repair_truncated_json_with_nested_array() {
+        let truncated = r#"{"summary": "Test", "key_events": ["event1", "event2"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["key_events"][0], "event1");
+        assert_eq!(parsed["key_events"][1], "event2");
+    }
+
+    #[test]
+    fn test_repair_truncated_json_already_valid() {
+        let valid = r#"{"summary": "OK", "error_count": 0}"#;
+        assert!(repair_truncated_json(valid).is_none());
+    }
+
+    #[test]
+    fn test_repair_truncated_json_not_json() {
+        assert!(repair_truncated_json("this is not json at all").is_none());
     }
 }

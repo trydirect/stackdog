@@ -37,7 +37,7 @@ WORKDIR /app
 
 # install libpq
 RUN apt-get update; \
-    apt-get install --no-install-recommends -y libpq-dev sqlite3 libsqlite3-dev openssl; \
+    apt-get install --no-install-recommends -y libpq-dev sqlite3 libsqlite3-dev openssl nftables iptables; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=rustscan/rustscan:latest  /usr/local/bin/rustscan /usr/local/bin/
