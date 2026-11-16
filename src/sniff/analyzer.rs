@@ -68,6 +68,9 @@ impl std::fmt::Display for AnomalySeverity {
 }
 
 /// Trait for AI-powered log analysis
+// async-trait expands to #[must_use] fns returning Result; newer clippy
+// flags that Result already implies must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LogAnalyzer: Send + Sync {
     /// Summarize a batch of log entries
