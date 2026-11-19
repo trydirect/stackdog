@@ -102,6 +102,10 @@ pub struct SniffConfig {
     pub sshole_enabled: bool,
     /// Match the package inventory against public CVE feeds (OSV + KEV)
     pub cve_watch_enabled: bool,
+    /// Flag nginx builds and configs that reach a NGINX2Root CVE
+    pub nginx2root_enabled: bool,
+    /// Flag a loaded kernel SCTP module, the unpatched NGINX2Root escalation
+    pub kernel_sctp_enabled: bool,
     /// Host directories to scan for PHP shells
     pub phpshell_paths: Vec<String>,
     /// Container name/image fragments that mark a PHP workload
@@ -326,6 +330,22 @@ impl SniffConfig {
                 })
                 .unwrap_or(true),
             cve_watch_enabled: env::var("STACKDOG_CVE_WATCH_ENABLED")
+                .ok()
+                .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(true),
+            nginx2root_enabled: env::var("STACKDOG_NGINX2ROOT_ENABLED")
+                .ok()
+                .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(true),
+            kernel_sctp_enabled: env::var("STACKDOG_KERNEL_SCTP_ENABLED")
                 .ok()
                 .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
                     "1" | "true" | "yes" | "on" => Some(true),

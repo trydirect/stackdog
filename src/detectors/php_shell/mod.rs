@@ -112,6 +112,9 @@ pub struct ContainerFilesystem {
     pub merged_dir: Option<String>,
     /// `PHP_VERSION` from the container environment, set by official PHP images.
     pub php_version: Option<String>,
+    /// `NGINX_VERSION` from the container environment, set by official nginx
+    /// images (which build from source and carry no package).
+    pub nginx_version: Option<String>,
 }
 
 /// A file the scanner flagged, as the access detector needs to know it.

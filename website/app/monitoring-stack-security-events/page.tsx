@@ -23,13 +23,13 @@ export const metadata: Metadata = {
     canonical: PAGE_PATH
   },
   openGraph: {
-    title: 'Three Security Events in One Month Reshaped Our Monitoring Stack — StackdogApp',
+    title: 'Three Security Events in One Month Reshaped Our Monitoring Stack | StackdogApp',
     description:
       'Where Stackdog stands after PHP2Shell and SSHole, and why it now installs with one command.',
     url: getSiteUrl() + PAGE_PATH
   },
   twitter: {
-    title: 'Three Security Events in One Month Reshaped Our Monitoring Stack — StackdogApp',
+    title: 'Three Security Events in One Month Reshaped Our Monitoring Stack | StackdogApp',
     description:
       'Where Stackdog stands after PHP2Shell and SSHole, and why it now installs with one command.'
   }
@@ -39,7 +39,7 @@ const layers = [
   {
     icon: ShieldAlert,
     title: 'PHP2Shell (v0.2.8–0.2.9)',
-    body: 'Forced the version-check layer: which PHP builds predate the fix, on the host and inside every running container — and a detector for the exploit\u2019s actual footprint, the request that runs PHP out of memory while it is still being parsed.'
+    body: 'Forced the version-check layer: which PHP builds predate the fix, on the host and inside every running container, and a detector for the exploit\u2019s actual footprint: the request that runs PHP out of memory while it is still being parsed.'
   },
   {
     icon: TerminalSquare,
@@ -252,11 +252,11 @@ export default function MonitoringStackSecurityEventsPage() {
               It doesn&apos;t patch anything (upgrading is the fix), a ban arrives after the fact
               and mostly stops scanners and repeat attempts, bans are IPv4-only right now, and
               version-based CVE findings mean &quot;a fix is missing&quot;, not &quot;you are
-              exploitable&quot; — distributions backport fixes. Every alert says to check your
+              exploitable&quot;: distributions backport fixes. Every alert says to check your
               vendor&apos;s advisory.
             </p>
             <p>
-              Happy to answer questions about the detection side — and if you&apos;ve been hit by
+              Happy to answer questions about the detection side. And if you&apos;ve been hit by
               something the logs didn&apos;t catch, we genuinely want to hear about it.{' '}
               <Link href="/contact" className="text-cyan-300 hover:text-cyan-200">
                 Contact us

@@ -41,6 +41,8 @@ pub union EbpfEventData {
     pub openat: OpenatData,
     /// ptrace data
     pub ptrace: PtraceData,
+    /// socket data
+    pub socket: SocketData,
     /// Raw bytes
     pub raw: [u8; 128],
 }
@@ -129,6 +131,28 @@ pub struct PtraceData {
     pub data: u64,
 }
 
+/// socket-specific data
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SocketData {
+    /// Address family (AF_INET, AF_INET6, ...)
+    pub domain: u32,
+    /// Socket type (SOCK_STREAM, SOCK_DGRAM, ...)
+    pub type_: u32,
+    /// Protocol (IPPROTO_TCP, IPPROTO_SCTP = 132, ...)
+    pub protocol: u32,
+}
+
+impl SocketData {
+    pub const fn empty() -> Self {
+        Self {
+            domain: 0,
+            type_: 0,
+            protocol: 0,
+        }
+    }
+}
+
 impl EbpfSyscallEvent {
     /// Create a new event
     pub fn new(pid: u32, uid: u32, syscall_id: u32) -> Self {
@@ -172,6 +196,7 @@ pub fn to_syscall_event(ebpf_event: &EbpfSyscallEvent) -> crate::events::syscall
         42 => SyscallType::Connect, // sys_connect
         257 => SyscallType::Openat, // sys_openat
         101 => SyscallType::Ptrace, // sys_ptrace
+        41 => SyscallType::Socket,  // sys_socket
         _ => SyscallType::Unknown,
     };
 
@@ -199,6 +224,10 @@ pub fn to_syscall_event(ebpf_event: &EbpfSyscallEvent) -> crate::events::syscall
         SyscallType::Ptrace => {
             // SAFETY: We interpret the union according to the syscall type.
             Some(ptrace_details(unsafe { &ebpf_event.data.ptrace }))
+        }
+        SyscallType::Socket => {
+            // SAFETY: We interpret the union according to the syscall type.
+            Some(socket_details(unsafe { &ebpf_event.data.socket }))
         }
         _ => None,
     };
@@ -247,6 +276,14 @@ fn ptrace_details(data: &PtraceData) -> crate::events::syscall::SyscallDetails {
         request: data.request,
         addr: data.addr,
         data: data.data,
+    }
+}
+
+fn socket_details(data: &SocketData) -> crate::events::syscall::SyscallDetails {
+    crate::events::syscall::SyscallDetails::Socket {
+        domain: data.domain,
+        type_: data.type_,
+        protocol: data.protocol,
     }
 }
 
@@ -368,6 +405,35 @@ mod tests {
                 assert_eq!(dst_addr.as_deref(), Some("192.0.2.25"));
                 assert_eq!(dst_port, 587);
                 assert_eq!(family, 2);
+            }
+            other => panic!("unexpected details: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_to_syscall_event_preserves_socket_details() {
+        let mut event = EbpfSyscallEvent::new(1234, 1000, 41);
+        event.set_comm(b"nginx");
+        event.data = EbpfEventData {
+            socket: SocketData {
+                domain: 2,
+                type_: 1,
+                protocol: 132,
+            },
+        };
+
+        let converted = event.to_syscall_event();
+        assert_eq!(converted.comm.as_deref(), Some("nginx"));
+        assert_eq!(converted.socket_details(), Some((2, 1, 132)));
+        match converted.details {
+            Some(SyscallDetails::Socket {
+                domain,
+                type_,
+                protocol,
+            }) => {
+                assert_eq!(domain, 2);
+                assert_eq!(type_, 1);
+                assert_eq!(protocol, 132);
             }
             other => panic!("unexpected details: {:?}", other),
         }

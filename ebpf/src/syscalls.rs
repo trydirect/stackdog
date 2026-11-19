@@ -13,7 +13,8 @@ use aya_ebpf::{
 };
 
 use crate::maps::{
-    ConnectData, EbpfEventData, EbpfSyscallEvent, ExecveData, OpenatData, PtraceData, EVENTS,
+    ConnectData, EbpfEventData, EbpfSyscallEvent, ExecveData, OpenatData, PtraceData, SocketData,
+    EVENTS,
 };
 
 const SYSCALL_ARG_START: usize = 16;
@@ -23,6 +24,7 @@ const SYS_EXECVE: u32 = 59;
 const SYS_CONNECT: u32 = 42;
 const SYS_OPENAT: u32 = 257;
 const SYS_PTRACE: u32 = 101;
+const SYS_SOCKET: u32 = 41;
 
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
@@ -49,6 +51,12 @@ pub fn trace_openat(ctx: TracePointContext) -> i32 {
 #[tracepoint(name = "sys_enter_ptrace", category = "syscalls")]
 pub fn trace_ptrace(ctx: TracePointContext) -> i32 {
     let _ = unsafe { try_trace_ptrace(&ctx) };
+    0
+}
+
+#[tracepoint(name = "sys_enter_socket", category = "syscalls")]
+pub fn trace_socket(ctx: TracePointContext) -> i32 {
+    let _ = unsafe { try_trace_socket(&ctx) };
     0
 }
 
@@ -120,6 +128,17 @@ unsafe fn try_trace_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
         data: read_u64_arg(ctx, 3)?,
     };
     event.data = EbpfEventData { ptrace: data };
+    submit_event(&event)
+}
+
+unsafe fn try_trace_socket(ctx: &TracePointContext) -> Result<(), i64> {
+    let mut event = base_event(ctx, SYS_SOCKET);
+    let data = SocketData {
+        domain: read_u64_arg(ctx, 0)? as u32,
+        type_: read_u64_arg(ctx, 1)? as u32,
+        protocol: read_u64_arg(ctx, 2)? as u32,
+    };
+    event.data = EbpfEventData { socket: data };
     submit_event(&event)
 }
 

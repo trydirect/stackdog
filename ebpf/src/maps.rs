@@ -11,6 +11,7 @@ pub union EbpfEventData {
     pub connect: ConnectData,
     pub openat: OpenatData,
     pub ptrace: PtraceData,
+    pub socket: SocketData,
     pub raw: [u8; 264],
 }
 
@@ -116,6 +117,24 @@ impl PtraceData {
             request: 0,
             addr: 0,
             data: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SocketData {
+    pub domain: u32,
+    pub type_: u32,
+    pub protocol: u32,
+}
+
+impl SocketData {
+    pub const fn empty() -> Self {
+        Self {
+            domain: 0,
+            type_: 0,
+            protocol: 0,
         }
     }
 }
