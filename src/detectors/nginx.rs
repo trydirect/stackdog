@@ -588,7 +588,7 @@ fn is_nginx_worker_crash(line: &str) -> bool {
 ///
 /// A web worker (nginx, Apache, php-fpm) serves requests; it does not exec a
 /// program as part of normal operation. When one does, the process has almost
-/// certainly been hijacked — the classic end state of a remote-code-execution
+/// certainly been hijacked - the classic end state of a remote-code-execution
 /// exploit such as NGINX2Root (CVE-2026-123007). This is the "programs started
 /// by an nginx worker" indicator, matched on the process that calls exec, which
 /// the eBPF collector captures at syscall entry before exec replaces it.

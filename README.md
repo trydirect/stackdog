@@ -17,16 +17,16 @@
 
 ### 🔥 Key Features
 
-- **📊 Real-time Monitoring** — eBPF-based syscall monitoring with minimal overhead (<5% CPU)
-- **🔍 Log Sniffing** — Discover, read, and AI-summarize logs from containers and system files
-- **🐘 PHP Shell Detection** — Finds webshells in host and container web roots and bans the clients driving them
-- **🧭 Detector Framework** — Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
-- **🤖 AI/ML Detection** — Candle-powered anomaly detection + OpenAI/Ollama log analysis
-- **🚨 Alert System** — Multi-channel notifications (Slack, Discord, Telegram, email, webhook)
-- **🔒 Automated Response** — nftables/iptables firewall, container quarantine
-- **📈 Threat Scoring** — Configurable scoring with time-decay
-- **🎯 Signature Detection** — 10+ built-in threat signatures
-- **📦 Log Archival** — Deduplicate and compress logs with zstd, optionally purge originals
+- **📊 Real-time Monitoring** - eBPF-based syscall monitoring with minimal overhead (<5% CPU)
+- **🔍 Log Sniffing** - Discover, read, and AI-summarize logs from containers and system files
+- **🐘 PHP Shell Detection** - Finds webshells in host and container web roots and bans the clients driving them
+- **🧭 Detector Framework** - Rust-native detector registry for web attack heuristics and outbound exfiltration indicators
+- **🤖 AI/ML Detection** - Candle-powered anomaly detection + OpenAI/Ollama log analysis
+- **🚨 Alert System** - Multi-channel notifications (Slack, Discord, Telegram, email, webhook)
+- **🔒 Automated Response** - nftables/iptables firewall, container quarantine
+- **📈 Threat Scoring** - Configurable scoring with time-decay
+- **🎯 Signature Detection** - 10+ built-in threat signatures
+- **📦 Log Archival** - Deduplicate and compress logs with zstd, optionally purge originals
 
 ---
 
@@ -70,7 +70,7 @@ Three settings are worth reviewing after upgrading:
 
 | Variable | Default | Why |
 |---|---|---|
-| `STACKDOG_IP_BAN_ALLOWLIST` | empty | Addresses never banned. Put load balancers, health checkers and this host's own public address here — banning them takes the service down. |
+| `STACKDOG_IP_BAN_ALLOWLIST` | empty | Addresses never banned. Put load balancers, health checkers and this host's own public address here - banning them takes the service down. |
 | `STACKDOG_TRUSTED_PROXY_RANGES` | RFC1918 only | A public-facing proxy is **not** covered by the defaults, so its own address is banned instead of the client behind it. Add it as `<ip>/32`. |
 | `STACKDOG_IP_BAN_MAX_PER_MINUTE` | `10` | Ceiling on blocks per minute. A burst is more often a misread log than a crowd of attackers. `0` disables it. |
 
@@ -82,10 +82,10 @@ To ban only on deterministic detectors and never on analyzer prose, set
 In a microservice stack the ban plane used to turn on the application itself:
 
 - a service calling its peers over published ports or a load balancer logged
-  the peer's address, and a wrong ban dropped it in `INPUT` **and** `FORWARD` —
+  the peer's address, and a wrong ban dropped it in `INPUT` **and** `FORWARD` -
   the service lost its own components;
 - `stackdog ban-ip` and the AI `ban_ip` tool accepted any string, CIDR ranges
-  included, and skipped the allowlist — `iptables -s 172.16.0.0/12 -j DROP`
+  included, and skipped the allowlist - `iptables -s 172.16.0.0/12 -j DROP`
   would take down a Docker network;
 - a crash between the firewall write and the database write left a DROP rule
   nothing would ever remove, and there was no way to clear it.
@@ -106,14 +106,14 @@ stackdog firewall reconcile     # drop orphans, restore missing rules
 
 Two related changes: bare `401` lines no longer count as a brute-force attempt,
 and the mail abuse guard quarantines a container only when it is actually
-observing outbound SMTP (`STACKDOG_MAIL_GUARD_REQUIRE_SMTP`, on by default) —
+observing outbound SMTP (`STACKDOG_MAIL_GUARD_REQUIRE_SMTP`, on by default) -
 the traffic heuristic alone matches ordinary service chatter, and quarantine is
 a network disconnect that needs manual release.
 
 ### The offense table is rewritten on first start
 
 `ip_offenses` held one row per detection with `offense_count` stuck at `1`, so
-the table grew with every hit and one ban left several rows behind — which is
+the table grew with every hit and one ban left several rows behind - which is
 why a single expiry emitted several "Released IP ban" notifications.
 
 The first start after upgrading collapses each `(ip_address, source_type)` group
@@ -281,9 +281,9 @@ This starts:
 
 The compose stack uses:
 
-- `stackdog` service — builds `docker/backend/Dockerfile`, runs `stackdog serve`, mounts `/var/run/docker.sock`, uses `network_mode: host`, and adds `NET_ADMIN` capability for IP banning
-- `stackdog-ui` service — builds the React app and serves it with Nginx
-- `stackdog-data` volume — persists the SQLite database between restarts
+- `stackdog` service - builds `docker/backend/Dockerfile`, runs `stackdog serve`, mounts `/var/run/docker.sock`, uses `network_mode: host`, and adds `NET_ADMIN` capability for IP banning
+- `stackdog-ui` service - builds the React app and serves it with Nginx
+- `stackdog-data` volume - persists the SQLite database between restarts
 
 > **Prerequisite for IP banning:** The `network_mode: host` and `cap_add: NET_ADMIN` settings are required so that `iptables`/`nftables` rules applied inside the container affect the host's network stack. Without them, IP ban firewall rules cannot reach host traffic.
 
@@ -552,7 +552,7 @@ stackdog sniff --sources "/app/logs/api.log,/app/logs/worker.log"
 - 🤖 AI summarization via OpenAI, Ollama, or local pattern analysis
 - 📦 Deduplicates and compresses logs with zstd
 - 🗑️ Optional `--consume` mode: archives then purges originals
-- 📊 Incremental reading — tracks byte offsets, never re-reads old entries
+- 📊 Incremental reading - tracks byte offsets, never re-reads old entries
 - 🚨 Anomaly alerts routed to configured notification channels
 
 **REST API:**
@@ -575,7 +575,7 @@ Every sniff pass reads the PHP files in web roots and scores them for webshell
 code: request input reaching `eval`/`system`/`assert`, `eval` of decoded data,
 `preg_replace` with `/e`, request input called as a function, and markers of
 known families (c99, r57, WSO, b374k, p0wny, China Chopper). One keyword never
-flags a file — WordPress calls `base64_decode`, Composer calls `proc_open` — the
+flags a file - WordPress calls `base64_decode`, Composer calls `proc_open` - the
 score does. PHP in an upload directory, and PHP hidden in an image there, add to
 it.
 
@@ -602,7 +602,7 @@ volumes:
 |---|---|---|
 | `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
 | `web.php-shell-access` | any request to a flagged upload whose URL goes through `uploads/`; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
-| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only, never a ban — banning visitors of an infected page would ban its audience |
+| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only, never a ban - banning visitors of an infected page would ban its audience |
 
 Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
 protected local addresses and the per-minute ceiling all apply. Stackdog never
@@ -624,7 +624,7 @@ fix is upgrading PHP; Stackdog tells you where you still have to.
 | Finding | When | Action |
 |---|---|---|
 | `vuln.php2shell` | a PHP build older than 8.2.35, 8.3.36, 8.4.27 or 8.5.12, or any 8.1 and older | Critical alert for upstream builds (official `php` images, read from `PHP_VERSION`); Medium "check your vendor" alert for distribution packages, which backport fixes without changing the version number |
-| `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1–2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
+| `php.worker-crash` | 3 or more php-fpm or Apache workers dying on SIGSEGV, SIGBUS, SIGABRT or SIGILL in one log source within one pass; 1-2 per pass never alert, so one flaky extension stays quiet | alert; repeated crashes are what attempts against PHP memory bugs leave behind |
 | `web.php2shell-attempt` | the exploit's out-of-memory step, with the client address: Apache `[client …] PHP Fatal error: Allowed memory size … in Unknown on line 0`; nginx `upstream sent unexpected FastCGI record … client: …, request: "POST …"` (php-fpm); or the public scanner's `php2shell-…` User-Agent | alert + an offense per line, so a client causing 5 within the ban window is banned in the pass that reads them |
 
 The version check reads `php8.x-common` (Debian, Ubuntu) and `php8x-common` or `php8x` (Alpine)
@@ -673,7 +673,7 @@ whose password field is `*`, such as root. Fixed in OpenSSH 10.6p2.
 The version check reads apk databases only: musl is the affected half of the
 configuration, and the PAM flavor (`openssh-server-pam`) and glibc
 distributions are not affected by the CVE. The log half reads the auth and
-syslog sources the brute-force bans come from — on Alpine, sshd logs to
+syslog sources the brute-force bans come from - on Alpine, sshd logs to
 `/var/log/messages`. Key-only accounts are `root` and `alpine`; add yours with
 `STACKDOG_SSHOLE_KEYONLY_USERS`. Stackdog cannot patch OpenSSH: upgrading is
 the fix.
@@ -695,7 +695,7 @@ are Critical, the rest carry the advisory's own severity label.
 Each package is re-queried at least every 24 hours, which is what catches
 newly published CVEs; answers are cached in the database so a restart does not
 re-query everything. Alerts are capped at 50 per pass, worst first. Honest
-limits: a match says a fix is missing, not that a machine is exploitable —
+limits: a match says a fix is missing, not that a machine is exploitable -
 distributions backport fixes, and configuration-dependent CVEs do not survive
 being flattened into a version range, so treat findings as "check your
 vendor's advisory". Very fresh CVEs may not be in the feeds yet; the
@@ -712,10 +712,10 @@ version. Fixed in nginx 1.30.7 (stable) and 1.31.9 (mainline).
 
 | Finding | When | Action |
 |---|---|---|
-| `vuln.nginx2root` | an nginx build older than the fixes whose config reaches one of the five CVEs: HTTP/2 (CVE-2026-123007, CVE-2026-123633), HTTP/3/QUIC (CVE-2026-121810), the mail proxy (CVE-2026-113425), or `proxy_pass` with a variable plus an SSI/mirror subrequest (CVE-2026-123634) | alert naming the CVE, the feature and the mitigation (e.g. `http2 off`) until you upgrade and **restart** nginx — a reload does not replace the binary. Never bans |
+| `vuln.nginx2root` | an nginx build older than the fixes whose config reaches one of the five CVEs: HTTP/2 (CVE-2026-123007, CVE-2026-123633), HTTP/3/QUIC (CVE-2026-121810), the mail proxy (CVE-2026-113425), or `proxy_pass` with a variable plus an SSI/mirror subrequest (CVE-2026-123634) | alert naming the CVE, the feature and the mitigation (e.g. `http2 off`) until you upgrade and **restart** nginx - a reload does not replace the binary. Never bans |
 | `nginx.worker-crash` | a run of nginx workers dying on memory faults (SIGSEGV and friends) | alert: that crash spray is what heap-grooming exploits leave behind |
-| `web.worker-exec` | a web-server worker (nginx, Apache, php-fpm) executed a program | Critical alert: workers do not exec, so the process was hijacked — the RCE end state |
-| `nginx.http2-spray` | a workload moved a lot of inbound bytes while logging few or no requests | review alert: the HTTP/2 heap spray's control frames are never logged, so its traffic looks like this (heuristic — a large upload can too; correlate with the two above) |
+| `web.worker-exec` | a web-server worker (nginx, Apache, php-fpm) executed a program | Critical alert: workers do not exec, so the process was hijacked - the RCE end state |
+| `nginx.http2-spray` | a workload moved a lot of inbound bytes while logging few or no requests | review alert: the HTTP/2 heap spray's control frames are never logged, so its traffic looks like this (heuristic - a large upload can too; correlate with the two above) |
 | `kernel.sctp-socket` | a web worker or container process created an SCTP socket | Critical/High alert: the first step of the kernel root-escalation |
 | `kernel.sctp-exposed` | the Linux `sctp` module is loaded | alert: the unpatched kernel step of the chain is reachable; block it (`install sctp /bin/false`) on hosts that do not need SCTP |
 
@@ -728,7 +728,7 @@ nginx images set `NGINX_VERSION`, which is read directly.
 turn the two checks off.
 
 Honest limits: the exploit's HTTP/2 control frames are not logged as requests,
-so Stackdog cannot see the attack traffic itself — it sees the exposure (version
+so Stackdog cannot see the attack traffic itself - it sees the exposure (version
 and config), the crash spray, the network footprint, and the RCE aftermath.
 `web.worker-exec` and `kernel.sctp-socket` read eBPF syscall events, which the
 `serve` runtime does not collect yet. `nginx.http2-spray` is a workload-level

@@ -106,7 +106,7 @@ const iocs = [
 const stackdogDetections = [
   [
     'vuln.nginx2root',
-    'Exposure detection. Flags nginx builds older than the fixes whose configuration actually reaches one of the five CVEs: it reads HTTP/2, HTTP/3, mail proxy and proxy_pass + SSI/mirror reachability from the config on the host and inside running containers, and reads NGINX_VERSION from official images and package databases. It follows nginx\u2019s two version tracks, names the CVE, and prints the exact mitigation \u2014 set http2 off, drop the quic listeners, and so on \u2014 next to the upgrade it does not replace.'
+    'Exposure detection. Flags nginx builds older than the fixes whose configuration actually reaches one of the five CVEs: it reads HTTP/2, HTTP/3, mail proxy and proxy_pass + SSI/mirror reachability from the config on the host and inside running containers, and reads NGINX_VERSION from official images and package databases. It follows nginx\u2019s two version tracks, names the CVE, and prints the exact mitigation - set http2 off, drop the quic listeners, and so on - next to the upgrade it does not replace.'
   ],
   [
     'nginx.worker-crash',
@@ -114,11 +114,11 @@ const stackdogDetections = [
   ],
   [
     'nginx.http2-spray',
-    'Network footprint. A workload-level heuristic that flags a container whose inbound bytes grew while its logged request count stayed small \u2014 what an HTTP/2 heap spray looks like, because its control frames are never logged. A review signal, not a certainty: a large upload can look similar, so it is read alongside the crash and RCE detections.'
+    'Network footprint. A workload-level heuristic that flags a container whose inbound bytes grew while its logged request count stayed small - what an HTTP/2 heap spray looks like, because its control frames are never logged. A review signal, not a certainty: a large upload can look similar, so it is read alongside the crash and RCE detections.'
   ],
   [
     'web.worker-exec',
-    'RCE detection. Alerts when a web-server worker \u2014 nginx, Apache or php-fpm \u2014 executes a program, watched through eBPF syscall monitoring. Web workers do not run programs, so this is the RCE end state.'
+    'RCE detection. Alerts when a web-server worker - nginx, Apache or php-fpm - executes a program, watched through eBPF syscall monitoring. Web workers do not run programs, so this is the RCE end state.'
   ],
   [
     'kernel.sctp-socket',
@@ -126,11 +126,11 @@ const stackdogDetections = [
   ],
   [
     'kernel.sctp-exposed',
-    'Kernel escalation exposure. Alerts when the Linux SCTP kernel module is loaded and reachable \u2014 the unpatched root-escalation step of the chain \u2014 and recommends blocking it with install sctp /bin/false when you do not need it.'
+    'Kernel escalation exposure. Alerts when the Linux SCTP kernel module is loaded and reachable - the unpatched root-escalation step of the chain - and recommends blocking it with install sctp /bin/false when you do not need it.'
   ],
   [
     'container.posture-risk',
-    'Container posture. Flags privileged, host-network and host-PID containers \u2014 nginx inside one of those turns this chain straight into host root \u2014 and Stackdog can quarantine a compromised container while you investigate.'
+    'Container posture. Flags privileged, host-network and host-PID containers - nginx inside one of those turns this chain straight into host root - and Stackdog can quarantine a compromised container while you investigate.'
   ]
 ] as const;
 
@@ -258,7 +258,7 @@ export default function Nginx2RootPage() {
               On 18 November 2026, Xint (Theori) disclosed five memory-corruption vulnerabilities in
               nginx. The worst of them, CVE-2026-123007, is unauthenticated remote code execution
               over plain HTTPS. A separate bug in the Linux kernel&apos;s SCTP stack, still
-              unpatched, turns that code execution into root — including from inside a Docker
+              unpatched, turns that code execution into root - including from inside a Docker
               container onto the host kernel. Together they are being called NGINX2Root: nginx to
               root.
             </p>
@@ -311,7 +311,7 @@ export default function Nginx2RootPage() {
             </p>
             <p>
               The end state of the first stage is deliberately unglamorous: the payload runs as
-              the nginx worker process. No dropped webshell, no new service — just the process
+              the nginx worker process. No dropped webshell, no new service - just the process
               that was already serving your traffic, now executing someone else&apos;s code.
             </p>
           </div>
@@ -340,7 +340,7 @@ export default function Nginx2RootPage() {
                 misconfiguration. Every nginx back to 1.9.5 is affected. A working proof of
                 concept is public, and Rapid7&apos;s reproduction pushes roughly 128 GB of HTTP/2
                 traffic at the target to groom the heap and brute-force ASLR before the payload
-                lands — as the nginx worker process.
+                lands - as the nginx worker process.
               </p>
             </div>
             <p className="mt-4 text-sm leading-7 text-slate-300">
@@ -363,7 +363,7 @@ export default function Nginx2RootPage() {
             ))}
           </div>
           <p className="mt-8 max-w-3xl text-sm leading-7 text-slate-400">
-            All five are fixed in the same releases — which is convenient, because the hard part
+            All five are fixed in the same releases - which is convenient, because the hard part
             was never the patch. It was noticing whether the patch is actually running.
           </p>
         </div>
@@ -381,7 +381,7 @@ export default function Nginx2RootPage() {
               The name of the chain comes from its second half. Once code runs as the nginx
               worker, the unpatched SCTP use-after-free in the Linux kernel takes it the rest of
               the way: to root. And because the kernel is shared, the boundary a Docker container
-              is supposed to provide does not help — the escalation works from inside a container
+              is supposed to provide does not help - the escalation works from inside a container
               out to the host kernel. A &quot;just a web container&quot; nginx is one kernel bug
               away from being your whole machine.
             </p>
@@ -395,7 +395,7 @@ export default function Nginx2RootPage() {
             <p className="text-sm leading-7 text-slate-300">
               On hosts that do not need SCTP, block it until the kernel fix lands:{' '}
               <code>echo &apos;install sctp /bin/false&apos; &gt; /etc/modprobe.d/zz-block-sctp.conf</code>
-              . If the module is loaded already, a rule only stops it loading — run{' '}
+              . If the module is loaded already, a rule only stops it loading - run{' '}
               <code>rmmod sctp</code> (or reboot) to drop it.
             </p>
           </div>
@@ -405,12 +405,12 @@ export default function Nginx2RootPage() {
       <section id="fix" className="section-shell scroll-mt-24">
         <div className="site-container">
           <span className="eyebrow">Fixed releases</span>
-          <h2 className="section-heading mt-6">Upgrade, then restart — a reload fixes nothing</h2>
+          <h2 className="section-heading mt-6">Upgrade, then restart - a reload fixes nothing</h2>
           <div className="mt-6 max-w-3xl space-y-4 text-sm leading-7 text-slate-400">
             <p>
               The nginx bugs are fixed in <code>nginx 1.30.7</code> (stable) and{' '}
               <code>nginx 1.31.9</code> (mainline), and in NGINX Plus 37.0.8.1 and 37.3.0.1. nginx
-              keeps two live tracks — odd minors are mainline, even minors are stable — and a
+              keeps two live tracks - odd minors are mainline, even minors are stable - and a
               version is fixed when it reaches the fix on its own track. 1.31.0 sorts above
               1.30.7 and is still vulnerable.
             </p>
@@ -430,7 +430,7 @@ export default function Nginx2RootPage() {
             <p className="text-sm leading-7 text-slate-300">
               A reload does not fix this. <code>nginx -s reload</code> and{' '}
               <code>systemctl reload nginx</code> swap the configuration but keep the old code in
-              every running worker — the vulnerable binary is still what answers connections.
+              every running worker - the vulnerable binary is still what answers connections.
               Restart the service, or re-create your containers from a fixed image. An
               &quot;updated&quot; nginx that was only reloaded is still a vulnerable nginx.
             </p>
@@ -479,7 +479,7 @@ export default function Nginx2RootPage() {
               <p>
                 1.30.7 on the stable track, 1.31.9 on mainline, or your vendor&apos;s fixed build
                 (NGINX Plus 37.0.8.1 / 37.3.0.1). Then restart the binary or re-create your
-                containers — a configuration reload leaves the vulnerable code in place.
+                containers - a configuration reload leaves the vulnerable code in place.
               </p>
             </Step>
             <Step number={2} title="No upgrade window yet? Turn the features off" code={mitigationCommand} label="Interim mitigations">
@@ -490,7 +490,7 @@ export default function Nginx2RootPage() {
                 kernel step.
               </p>
               <p>
-                These are lossy — no HTTP/2 means no HTTP/2 — so treat them as the bridge to the
+                These are lossy - no HTTP/2 means no HTTP/2 - so treat them as the bridge to the
                 upgrade, not the destination.
               </p>
             </Step>
@@ -522,7 +522,7 @@ export default function Nginx2RootPage() {
           <h2 className="section-heading mt-6">Detection for every step of the chain</h2>
           <p className="section-copy">
             Stackdog is a Rust-based, real-time threat detection and automated response platform
-            for Docker containers and Linux servers — a modern fail2ban with eyes on the kernel
+            for Docker containers and Linux servers - a modern fail2ban with eyes on the kernel
             and the container runtime. It does not patch anything; upgrading nginx is the fix.
             What it does is answer, continuously and without network scanning, the two questions
             this chain raises: is a vulnerable nginx reachable, and has anyone used it?
@@ -541,7 +541,7 @@ export default function Nginx2RootPage() {
             The exposure check alone is worth the install: it reads HTTP/2, HTTP/3, mail proxy and{' '}
             <code>proxy_pass</code> + SSI/mirror reachability from the nginx configuration on the
             host and inside every running container, so it names the CVEs that apply to{' '}
-            <em>your</em> config — and the exact mitigation for each — instead of a generic
+            <em>your</em> config - and the exact mitigation for each - instead of a generic
             &quot;upgrade nginx&quot;.
           </p>
         </div>
@@ -570,8 +570,8 @@ export default function Nginx2RootPage() {
               <Link href="/sshole-check" className="text-cyan-300 hover:text-cyan-200">
                 SSHole
               </Link>{' '}
-              (CVE-2026-123158) likewise. Where a client address is available — webshells, brute
-              force, the PHP2Shell attempt footprint — the ban engine acts on it fail2ban-style,
+              (CVE-2026-123158) likewise. Where a client address is available - webshells, brute
+              force, the PHP2Shell attempt footprint - the ban engine acts on it fail2ban-style,
               firewall rule reconciled against its own database every pass.{' '}
               <Link href="/fail2ban-alternative" className="text-cyan-300 hover:text-cyan-200">
                 The comparison has its own page
@@ -603,7 +603,7 @@ export default function Nginx2RootPage() {
             ))}
             <p>
               Happy to answer questions about the detection side. And if you have seen this chain
-              in your own logs — or seen it miss your logs entirely — we genuinely want to hear
+              in your own logs - or seen it miss your logs entirely - we genuinely want to hear
               about it.{' '}
               <Link href="/contact" className="text-cyan-300 hover:text-cyan-200">
                 Contact us
@@ -625,8 +625,8 @@ export default function Nginx2RootPage() {
             <code>stackdog init</code> writes a starter config and every setting has a safe
             default, so it runs with nothing configured at all. Also on Homebrew (
             <code>brew install trydirect/tap/stackdog</code>) and cargo (
-            <code>cargo install stackdog</code>). The full walkthrough — settings, systemd unit,
-            a safe test — is on the{' '}
+            <code>cargo install stackdog</code>). The full walkthrough - settings, systemd unit,
+            a safe test - is on the{' '}
             <Link href="/php-shell-quickstart" className="text-cyan-300 hover:text-cyan-200">
               quick start page
             </Link>
