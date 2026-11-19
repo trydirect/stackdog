@@ -9,6 +9,7 @@ pub mod cve_watch;
 pub(crate) mod http_request;
 mod integrity;
 mod ml;
+pub mod nginx;
 pub mod php2shell;
 pub mod php_shell;
 pub mod sshole;
@@ -25,12 +26,18 @@ use self::cve_watch::CveWatchMonitor;
 use self::http_request::{extract_request, HttpRequest};
 use self::integrity::FileIntegrityMonitor;
 use self::ml::MlBehavioralDetector;
+pub use self::nginx::TrafficWindow;
+use self::nginx::{
+    Http2SprayMonitor, KernelSctpMonitor, NginxExposureMonitor, NginxWorkerCrashDetector,
+    SctpSocketMonitor, WebWorkerExecMonitor,
+};
 use self::php2shell::{Php2ShellAttemptDetector, PhpVersionMonitor, PhpWorkerCrashDetector};
 use self::php_shell::{
     ContainerFilesystem, PhpShellAccessDetector, PhpShellOptions, PhpShellScanner, ScanRoot,
 };
 use self::sshole::{SshPasswordLoginDetector, SshVersionMonitor};
 use crate::database::connection::DbPool;
+use crate::events::syscall::SyscallEvent;
 use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly};
 use crate::sniff::reader::LogEntry;
 
@@ -108,6 +115,11 @@ pub struct DetectorRegistry {
     php_shell_scanner: PhpShellScanner,
     php_version_monitor: PhpVersionMonitor,
     sshole_monitor: SshVersionMonitor,
+    nginx_exposure_monitor: NginxExposureMonitor,
+    kernel_sctp_monitor: KernelSctpMonitor,
+    web_worker_exec_monitor: WebWorkerExecMonitor,
+    sctp_socket_monitor: SctpSocketMonitor,
+    http2_spray_monitor: Http2SprayMonitor,
 }
 
 impl DetectorRegistry {
@@ -121,6 +133,11 @@ impl DetectorRegistry {
             php_shell_scanner: PhpShellScanner::new(),
             php_version_monitor: PhpVersionMonitor::new(),
             sshole_monitor: SshVersionMonitor::new(),
+            nginx_exposure_monitor: NginxExposureMonitor::new(),
+            kernel_sctp_monitor: KernelSctpMonitor,
+            web_worker_exec_monitor: WebWorkerExecMonitor,
+            sctp_socket_monitor: SctpSocketMonitor,
+            http2_spray_monitor: Http2SprayMonitor::new(),
         }
     }
 
@@ -153,6 +170,7 @@ impl DetectorRegistry {
         ));
         self.register(PhpWorkerCrashDetector);
         self.register(Php2ShellAttemptDetector);
+        self.register(NginxWorkerCrashDetector);
         self.register(SshPasswordLoginDetector::new());
     }
 
@@ -221,6 +239,54 @@ impl DetectorRegistry {
     ) -> Vec<LogAnomaly> {
         self.sshole_monitor
             .detect(containers, host_root)
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    /// Flag nginx builds whose configuration reaches one of the NGINX2Root
+    /// CVEs, on the host and in running containers.
+    pub fn detect_nginx_exposure_anomalies(
+        &self,
+        containers: &[ContainerFilesystem],
+        host_root: Option<&str>,
+    ) -> Vec<LogAnomaly> {
+        self.nginx_exposure_monitor
+            .detect(containers, host_root)
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    /// Flag a loaded kernel SCTP module, the unpatched step of the NGINX2Root
+    /// root-escalation chain.
+    pub fn detect_kernel_sctp_anomalies(&self, host_root: Option<&str>) -> Vec<LogAnomaly> {
+        self.kernel_sctp_monitor
+            .detect(host_root)
+            .into_iter()
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    /// Flag programs executed by web-server workers (the remote-code-execution
+    /// indicator) and SCTP sockets opened by workers or containers (the kernel
+    /// escalation step). Consumes syscall events from the eBPF collector, which
+    /// the `serve` runtime does not yet start.
+    pub fn detect_syscall_anomalies(&self, events: &[SyscallEvent]) -> Vec<LogAnomaly> {
+        self.web_worker_exec_monitor
+            .detect(events)
+            .into_iter()
+            .chain(self.sctp_socket_monitor.detect(events))
+            .map(|finding| finding.to_log_anomaly())
+            .collect()
+    }
+
+    /// Flag workloads whose inbound bytes grew while their logged request count
+    /// stayed small — the footprint of an HTTP/2 heap spray (CVE-2026-123007),
+    /// whose control frames are never logged.
+    pub fn detect_traffic_anomalies(&self, observations: &[TrafficWindow]) -> Vec<LogAnomaly> {
+        self.http2_spray_monitor
+            .detect(observations)
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
             .collect()

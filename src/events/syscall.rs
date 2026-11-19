@@ -75,6 +75,11 @@ pub enum SyscallDetails {
         addr: u64,
         data: u64,
     },
+    Socket {
+        domain: u32,
+        type_: u32,
+        protocol: u32,
+    },
 }
 
 impl SyscallEvent {
@@ -124,6 +129,18 @@ impl SyscallEvent {
             Some(SyscallDetails::Connect {
                 dst_addr, dst_port, ..
             }) => Some((dst_addr.as_deref(), *dst_port)),
+            _ => None,
+        }
+    }
+
+    /// Get socket parameters `(domain, type, protocol)` if this is a socket event.
+    pub fn socket_details(&self) -> Option<(u32, u32, u32)> {
+        match self.details.as_ref() {
+            Some(SyscallDetails::Socket {
+                domain,
+                type_,
+                protocol,
+            }) => Some((*domain, *type_, *protocol)),
             _ => None,
         }
     }

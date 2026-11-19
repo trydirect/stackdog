@@ -16,6 +16,7 @@ use crate::database::repositories::log_sources as log_sources_repo;
 use crate::detectors::php_shell;
 use crate::detectors::sshole;
 use crate::detectors::DetectorRegistry;
+use crate::detectors::TrafficWindow;
 use crate::docker::DockerClient;
 use crate::ip_ban::{gate, IpBanConfig, IpBanEngine, OffenseInput};
 use crate::sniff::analyzer::{LogAnalyzer, PatternAnalyzer};
@@ -41,6 +42,9 @@ pub struct SniffOrchestrator {
     tool_registry: ToolRegistry,
     /// Last AI analysis time per source (prevents re-analyzing every 30s)
     last_ai_analysis: Mutex<HashMap<String, chrono::DateTime<Utc>>>,
+    /// Per-container inbound bytes at the last pass, for the HTTP/2 spray
+    /// heuristic's byte deltas.
+    traffic_prev_rx: Mutex<HashMap<String, u64>>,
 }
 
 impl SniffOrchestrator {
@@ -99,6 +103,7 @@ impl SniffOrchestrator {
             ip_ban,
             tool_registry,
             last_ai_analysis: Mutex::new(HashMap::new()),
+            traffic_prev_rx: Mutex::new(HashMap::new()),
         })
     }
 
@@ -198,6 +203,7 @@ impl SniffOrchestrator {
                     || self.config.php_version_check_enabled
                     || self.config.sshole_enabled
                     || self.config.cve_watch_enabled
+                    || self.config.nginx2root_enabled
                 {
                     match docker.list_container_filesystems().await {
                         Ok(filesystems) => container_filesystems = filesystems,
@@ -295,6 +301,35 @@ impl SniffOrchestrator {
             .await?;
         }
 
+        if self.config.nginx2root_enabled {
+            let anomalies = self.detectors.detect_nginx_exposure_anomalies(
+                &container_filesystems,
+                self.config.host_root.as_deref(),
+            );
+            self.report_detector_batch(
+                &mut result,
+                "nginx2root",
+                container_filesystems.len() + 1,
+                "NGINX2Root exposure check",
+                anomalies,
+            )
+            .await?;
+        }
+
+        if self.config.kernel_sctp_enabled {
+            let anomalies = self
+                .detectors
+                .detect_kernel_sctp_anomalies(self.config.host_root.as_deref());
+            self.report_detector_batch(
+                &mut result,
+                "kernel-sctp",
+                1,
+                "Kernel SCTP check",
+                anomalies,
+            )
+            .await?;
+        }
+
         // 1. Discover sources
         log::debug!("Step 1: discovering log sources...");
         let sources = discovery::discover_all(&self.config.extra_sources).await?;
@@ -322,6 +357,7 @@ impl SniffOrchestrator {
 
         // 3. Process each source
         let reader_count = readers.len();
+        let mut request_counts: HashMap<String, u64> = HashMap::new();
         for (i, reader) in readers.iter_mut().enumerate() {
             log::debug!(
                 "Step 3: reading source {}/{} ({})",
@@ -337,6 +373,16 @@ impl SniffOrchestrator {
 
             result.total_entries += entries.len();
             log::debug!("  Read {} entries", entries.len());
+
+            // Requests logged per container this pass, for the HTTP/2 spray
+            // heuristic. Keyed by container id (source.path_or_id), which is
+            // stable across passes unlike source.id.
+            if let Some(source) = sources.get(i) {
+                if matches!(&source.source_type, LogSourceType::DockerContainer) {
+                    *request_counts.entry(source.path_or_id.clone()).or_insert(0) +=
+                        entries.len() as u64;
+                }
+            }
 
             // 4. Analyze
             log::debug!("Step 4: analyzing {} entries...", entries.len());
@@ -495,7 +541,67 @@ impl SniffOrchestrator {
             }
         }
 
+        // HTTP/2 spray heuristic: workloads whose inbound bytes grew this pass
+        // while their logged request count stayed small. Runs after the logs
+        // are read so the request counts are in.
+        if self.config.nginx2root_enabled {
+            let windows = self.gather_traffic_windows(&request_counts).await;
+            self.report_detector_batch(
+                &mut result,
+                "http2-spray",
+                windows.len(),
+                "HTTP/2 spray heuristic",
+                self.detectors.detect_traffic_anomalies(&windows),
+            )
+            .await?;
+        }
+
         Ok(result)
+    }
+
+    /// Poll running containers for the inbound bytes they received since the
+    /// last pass, and pair each with the requests logged for it this pass.
+    /// Docker reports per-container totals, so this is a workload-level read of
+    /// the spray footprint, not a per-connection one.
+    async fn gather_traffic_windows(
+        &self,
+        request_counts: &HashMap<String, u64>,
+    ) -> Vec<TrafficWindow> {
+        let Ok(docker) = DockerClient::new().await else {
+            return Vec::new();
+        };
+        let Ok(containers) = docker.list_containers(false).await else {
+            return Vec::new();
+        };
+
+        // Gather the samples first: these awaits must not run while the delta
+        // state is locked.
+        let mut samples: Vec<(String, String, u64)> = Vec::new();
+        for container in containers {
+            if container.status != "Running" {
+                continue;
+            }
+            if let Ok(stats) = docker.get_container_stats(&container.id).await {
+                samples.push((container.id, container.name, stats.network_rx));
+            }
+        }
+
+        let mut windows = Vec::new();
+        let mut previous = self.traffic_prev_rx.lock().unwrap();
+        for (id, name, current) in samples {
+            if let Some(prev) = previous.insert(id.clone(), current) {
+                let inbound_bytes = current.saturating_sub(prev);
+                if inbound_bytes == 0 {
+                    continue;
+                }
+                windows.push(TrafficWindow {
+                    owner: name,
+                    inbound_bytes,
+                    request_count: request_counts.get(&id).copied().unwrap_or(0),
+                });
+            }
+        }
+        windows
     }
 
     async fn apply_ip_ban(

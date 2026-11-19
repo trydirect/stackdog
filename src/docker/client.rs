@@ -170,8 +170,13 @@ impl DockerClient {
                 .graph_driver
                 .and_then(|driver| driver.data.get("MergedDir").cloned());
             let config = inspect.config.unwrap_or_default();
-            let php_version = config.env.unwrap_or_default().into_iter().find_map(|var| {
+            let env = config.env.unwrap_or_default();
+            let php_version = env.iter().find_map(|var| {
                 var.strip_prefix("PHP_VERSION=")
+                    .map(|version| version.trim().to_string())
+            });
+            let nginx_version = env.iter().find_map(|var| {
+                var.strip_prefix("NGINX_VERSION=")
                     .map(|version| version.trim().to_string())
             });
 
@@ -186,6 +191,7 @@ impl DockerClient {
                 mounts,
                 merged_dir,
                 php_version,
+                nginx_version,
             });
         }
 
