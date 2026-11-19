@@ -97,6 +97,11 @@ export default function Footer(_: FooterProps) {
                 </Link>
               </li>
               <li>
+                <Link href="/nginx2root" className="hover:text-cyan-300">
+                  NGINX2Root Protection
+                </Link>
+              </li>
+              <li>
                 <Link href="/contact" className="hover:text-cyan-300">
                   Contact
                 </Link>
