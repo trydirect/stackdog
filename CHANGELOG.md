@@ -12,16 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NGINX2Root exposure (CVE-2026-123007, CVE-2026-123633, CVE-2026-123634,
   CVE-2026-121810, CVE-2026-113425): `vuln.nginx2root` flags nginx builds older
   than 1.30.7 (stable) / 1.31.9 (mainline) whose config reaches one of the five
-  CVEs — HTTP/2, HTTP/3, the mail proxy, or `proxy_pass` with a variable plus an
+  CVEs - HTTP/2, HTTP/3, the mail proxy, or `proxy_pass` with a variable plus an
   SSI/mirror subrequest. It reads `NGINX_VERSION` from official images and the
   package databases, follows nginx's two version tracks, and names the CVE, the
   feature and the mitigation. `nginx.worker-crash` alerts on a run of nginx
   workers dying on memory faults. `kernel.sctp-exposed` alerts when the Linux
-  `sctp` module is loaded — the unpatched kernel step of the root-escalation
+  `sctp` module is loaded - the unpatched kernel step of the root-escalation
   chain. `web.worker-exec` alerts when a web-server worker executes a program,
   the RCE end state (reads eBPF syscall events, which `serve` does not yet
   collect). `kernel.sctp-socket` alerts when a web worker or container process
-   creates an SCTP socket — the first step of the kernel root-escalation.
+   creates an SCTP socket - the first step of the kernel root-escalation.
    `nginx.http2-spray` is a workload-level heuristic that flags a container whose
    inbound bytes grew while its logged request count stayed small, the footprint
    of the HTTP/2 heap spray. The eBPF collector now traces `socket()` as well, so
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running containers against the public feeds. OSV answers "does this exact
   version have known vulnerabilities" (Debian and Ubuntu versions server-side,
   Alpine versions without the `-rN` package revision), CISA's KEV catalog says
-  which are exploited in the wild — those are Critical, the rest carry the
+  which are exploited in the wild - those are Critical, the rest carry the
   advisory's severity label. Alerts once per package and CVE, 50 per pass
   worst first, caches answers for 24h. A match means a fix is missing, not
   that a box is exploitable: alerts say to check the vendor's advisory.
@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration is also read from `~/.config/stackdog/.env`
   (`$XDG_CONFIG_HOME/stackdog/.env` when set), behind the working-directory
   `.env`: the nearest file wins and real environment variables win over both.
-  A missing file is no longer a warning — every setting has a default.
+  A missing file is no longer a warning - every setting has a default.
 - `stackdog init` writes the starter config to that directory and never
   overwrites an existing file (it holds credentials).
 - Discord webhook notifications (`STACKDOG_DISCORD_WEBHOOK_URL`), routed exactly
@@ -117,10 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP shell detection. Each sniff pass scores the PHP files in host web roots
   (`STACKDOG_PHPSHELL_PATHS`) and in the docroots of PHP containers for webshell
   code, and alerts on new or changed files that score as one (`php.shell-file`).
-  Requests that drive a shell — any request to a flagged upload through an
+  Requests that drive a shell - any request to a flagged upload through an
   `uploads/` URL, parameters sent to a flagged file that is not a common entry
   point, a POST to PHP under an `uploads/` URL (PATH_INFO and `//`, `.`, `..`
-  resolved) — are banned like other detector findings (`web.php-shell-access`).
+  resolved) - are banned like other detector findings (`web.php-shell-access`).
   A plain visit to an infected page is an alert only (`php.shell-request`).
   Running in Docker, mount the host read-only and set `STACKDOG_HOST_ROOT`.
   Extra signatures load from JSON (`STACKDOG_PHPSHELL_SIGNATURES`).
@@ -138,14 +138,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The AI `ban_ip` tool must name a confirmed attack.** It banned addresses
-  for "repeated connection attempts" — background internet noise the auto path
+  for "repeated connection attempts" - background internet noise the auto path
   deliberately ignores. Weak reasons are now refused with a message telling the
   model to report an alert instead, tool-driven bans respect the per-minute
   ceiling (the CLI stays exempt), and the tool description says what counts as
   a confirmed attack.
 - **Alerts say which host sent them.** The Slack "Instance" field comes from
   `STACKDOG_NOTIFICATION_LABEL`, and now falls back to the machine hostname
-  when the label is unset — an unattributable alert is half an alert in a fleet.
+  when the label is unset - an unattributable alert is half an alert in a fleet.
 
 ## [0.2.5] - 2026-10-26
 
@@ -159,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used to skip all of these checks.
 - **Ban rules are tagged and reconciled.** Rules now carry a `stackdog` marker;
   on start, rules with no database record are removed and recorded bans with no
-  rule are re-applied — a crash between the firewall write and the database
+  rule are re-applied - a crash between the firewall write and the database
   write used to strand a DROP rule nothing would ever remove.
 - **Expired bans are released in `stackdog sniff` too.** The expiry loop ran
   only under `serve`; a sniff-only deployment banned permanently.
@@ -175,26 +175,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `stackdog unban <ip>` — release a ban and remove its firewall rules, even
+- `stackdog unban <ip>` - release a ban and remove its firewall rules, even
   when the database has no record of it (crash leftovers).
-- `stackdog unban --all` — release every ban and remove every Stackdog firewall
+- `stackdog unban --all` - release every ban and remove every Stackdog firewall
   rule: the one command to restore connectivity after a wrong ban.
-- `stackdog firewall list` — show blocked addresses in the firewall and the
+- `stackdog firewall list` - show blocked addresses in the firewall and the
   database side by side.
-- `stackdog firewall reconcile` — run the startup reconciliation on demand.
+- `stackdog firewall reconcile` - run the startup reconciliation on demand.
 - AI tool `unban_ip`, symmetric to `ban_ip`.
-- `STACKDOG_IP_BAN_PROTECT_LOCAL_IPS` (default `true`) — never ban addresses of
+- `STACKDOG_IP_BAN_PROTECT_LOCAL_IPS` (default `true`) - never ban addresses of
   this host or its containers.
 
 ## [0.2.2] - 2026-04-07
 
 ### Fixed
 
-- **CLI startup robustness** — `.env` loading is now non-fatal.
+- **CLI startup robustness** - `.env` loading is now non-fatal.
   - `stackdog --help` and other commands no longer panic when `.env` is missing or contains malformed lines.
   - Stackdog now logs a warning and continues with existing environment variables.
 
-- **Installer release resolution** — `install.sh` now handles missing `/releases/latest` responses gracefully.
+- **Installer release resolution** - `install.sh` now handles missing `/releases/latest` responses gracefully.
   - Falls back to the most recent release entry when no stable "latest" release is available.
   - Improves error messaging and updates install examples to use the `main` branch script URL.
 
@@ -211,7 +211,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - RFC3164 and RFC5424 parsing in file-based log ingestion for cleaner timestamps and normalized message bodies.
 
 #### Log Sniffing & Analysis (`stackdog sniff`)
-- **CLI Subcommands** — Multi-mode binary with `stackdog serve` and `stackdog sniff`
+- **CLI Subcommands** - Multi-mode binary with `stackdog serve` and `stackdog sniff`
   - `--once` flag for single-pass mode
   - `--consume` flag to archive logs (zstd) and purge originals
   - `--sources` to add custom log paths
@@ -219,48 +219,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--interval` for polling frequency
   - `--output` for archive destination
 
-- **Log Source Discovery** — Automatic and manual log source management
+- **Log Source Discovery** - Automatic and manual log source management
   - System logs (`/var/log/syslog`, `messages`, `auth.log`, etc.)
   - Docker container logs via bollard API
   - Custom file paths (CLI, env var, or REST API)
   - Incremental read position tracking (byte offset persisted in DB)
 
-- **Log Readers** — Trait-based reader abstraction
+- **Log Readers** - Trait-based reader abstraction
   - `FileLogReader` with byte-offset tracking and log rotation detection
   - `DockerLogReader` using bollard streaming API
   - `JournaldReader` (Linux-gated) for systemd journal
 
-- **AI-Powered Analysis** — Dual-backend log summarization
-  - `OpenAiAnalyzer` — works with any OpenAI-compatible API (OpenAI, Ollama, vLLM)
-  - `PatternAnalyzer` — local fallback with error/warning counting and spike detection
+- **AI-Powered Analysis** - Dual-backend log summarization
+  - `OpenAiAnalyzer` - works with any OpenAI-compatible API (OpenAI, Ollama, vLLM)
+  - `PatternAnalyzer` - local fallback with error/warning counting and spike detection
   - Structured `LogSummary` with anomaly detection (`LogAnomaly`, severity levels)
 
-- **Log Consumer** — Archive and purge pipeline
+- **Log Consumer** - Archive and purge pipeline
   - FNV hash-based deduplication
   - zstd compression (level 3) for archived logs
   - File truncation and Docker log purge
   - `ConsumeResult` tracking (entries archived, duplicates skipped, bytes freed)
 
-- **Reporter** — Bridges log analysis to existing alert system
+- **Reporter** - Bridges log analysis to existing alert system
   - Converts `LogAnomaly` → `Alert` using `AlertManager` infrastructure
   - Routes notifications via `route_by_severity()` to configured channels
   - Persists `LogSummary` records to database
 
 - **REST API Endpoints**
-  - `GET /api/logs/sources` — list discovered log sources
-  - `POST /api/logs/sources` — manually add a custom source
-  - `GET /api/logs/sources/{path}` — get source details
-  - `DELETE /api/logs/sources/{path}` — remove a source
-  - `GET /api/logs/summaries` — list AI-generated summaries (filterable by source)
+  - `GET /api/logs/sources` - list discovered log sources
+  - `POST /api/logs/sources` - manually add a custom source
+  - `GET /api/logs/sources/{path}` - get source details
+  - `DELETE /api/logs/sources/{path}` - remove a source
+  - `GET /api/logs/summaries` - list AI-generated summaries (filterable by source)
 
-- **Database Tables** — `log_sources` and `log_summaries` with indexes
+- **Database Tables** - `log_sources` and `log_summaries` with indexes
 
 #### Dependencies
-- `clap = "4"` (derive) — CLI argument parsing
-- `async-trait = "0.1"` — async trait support
-- `reqwest = "0.12"` (json) — HTTP client for AI APIs
-- `zstd = "0.13"` — log compression
-- `futures-util = "0.3"` — Docker log streaming
+- `clap = "4"` (derive) - CLI argument parsing
+- `async-trait = "0.1"` - async trait support
+- `reqwest = "0.12"` (json) - HTTP client for AI APIs
+- `zstd = "0.13"` - log compression
+- `futures-util = "0.3"` - Docker log streaming
 
 ### Changed
 
