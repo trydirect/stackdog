@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- NGINX2Root exposure (CVE-2026-123007, CVE-2026-123633, CVE-2026-123634,
+  CVE-2026-121810, CVE-2026-113425): `vuln.nginx2root` flags nginx builds older
+  than 1.30.7 (stable) / 1.31.9 (mainline) whose config reaches one of the five
+  CVEs — HTTP/2, HTTP/3, the mail proxy, or `proxy_pass` with a variable plus an
+  SSI/mirror subrequest. It reads `NGINX_VERSION` from official images and the
+  package databases, follows nginx's two version tracks, and names the CVE, the
+  feature and the mitigation. `nginx.worker-crash` alerts on a run of nginx
+  workers dying on memory faults. `kernel.sctp-exposed` alerts when the Linux
+  `sctp` module is loaded — the unpatched kernel step of the root-escalation
+  chain. `web.worker-exec` alerts when a web-server worker executes a program,
+  the RCE end state (reads eBPF syscall events, which `serve` does not yet
+  collect). `kernel.sctp-socket` alerts when a web worker or container process
+   creates an SCTP socket — the first step of the kernel root-escalation.
+   `nginx.http2-spray` is a workload-level heuristic that flags a container whose
+   inbound bytes grew while its logged request count stayed small, the footprint
+   of the HTTP/2 heap spray. The eBPF collector now traces `socket()` as well, so
+   SCTP socket creation is captured alongside execve/connect/openat/ptrace. None
+   of these name a client address, so none ban.
+  `STACKDOG_NGINX2ROOT_ENABLED` and `STACKDOG_KERNEL_SCTP_ENABLED` toggle them.
+
 ## [0.3.1] - 2026-11-13
 
 ### Added

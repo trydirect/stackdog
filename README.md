@@ -702,6 +702,40 @@ vendor's advisory". Very fresh CVEs may not be in the feeds yet; the
 specialized detectors above cover the ones we know in detail.
 `STACKDOG_CVE_WATCH_ENABLED=false` turns it off.
 
+#### NGINX2Root exposure (CVE-2026-123007 and four more)
+
+NGINX2Root is a set of five memory-corruption bugs in nginx (disclosed
+2026-11-18) plus an unpatched Linux kernel SCTP use-after-free that escalates
+the nginx worker to root, including out of a Docker container. Each nginx bug is
+reachable only when a feature is on, so exposure is configuration, not just
+version. Fixed in nginx 1.30.7 (stable) and 1.31.9 (mainline).
+
+| Finding | When | Action |
+|---|---|---|
+| `vuln.nginx2root` | an nginx build older than the fixes whose config reaches one of the five CVEs: HTTP/2 (CVE-2026-123007, CVE-2026-123633), HTTP/3/QUIC (CVE-2026-121810), the mail proxy (CVE-2026-113425), or `proxy_pass` with a variable plus an SSI/mirror subrequest (CVE-2026-123634) | alert naming the CVE, the feature and the mitigation (e.g. `http2 off`) until you upgrade and **restart** nginx — a reload does not replace the binary. Never bans |
+| `nginx.worker-crash` | a run of nginx workers dying on memory faults (SIGSEGV and friends) | alert: that crash spray is what heap-grooming exploits leave behind |
+| `web.worker-exec` | a web-server worker (nginx, Apache, php-fpm) executed a program | Critical alert: workers do not exec, so the process was hijacked — the RCE end state |
+| `nginx.http2-spray` | a workload moved a lot of inbound bytes while logging few or no requests | review alert: the HTTP/2 heap spray's control frames are never logged, so its traffic looks like this (heuristic — a large upload can too; correlate with the two above) |
+| `kernel.sctp-socket` | a web worker or container process created an SCTP socket | Critical/High alert: the first step of the kernel root-escalation |
+| `kernel.sctp-exposed` | the Linux `sctp` module is loaded | alert: the unpatched kernel step of the chain is reachable; block it (`install sctp /bin/false`) on hosts that do not need SCTP |
+
+Version exposure follows the two nginx tracks (odd minor = mainline, even =
+stable), so 1.31.0 is still exposed though it sorts above 1.30.7. Source and
+image builds are reported as exposed; distribution packages are only a lead,
+because distros backport fixes without bumping the upstream number. Official
+nginx images set `NGINX_VERSION`, which is read directly.
+`STACKDOG_NGINX2ROOT_ENABLED=false` and `STACKDOG_KERNEL_SCTP_ENABLED=false`
+turn the two checks off.
+
+Honest limits: the exploit's HTTP/2 control frames are not logged as requests,
+so Stackdog cannot see the attack traffic itself — it sees the exposure (version
+and config), the crash spray, the network footprint, and the RCE aftermath.
+`web.worker-exec` and `kernel.sctp-socket` read eBPF syscall events, which the
+`serve` runtime does not collect yet. `nginx.http2-spray` is a workload-level
+heuristic from Docker byte counters and log counts, not a per-connection
+measurement. `vuln.nginx2root`, `nginx.worker-crash` and `kernel.sctp-exposed`
+run from logs and the filesystem with no extra source.
+
 ---
 
 ## 📦 Installation
