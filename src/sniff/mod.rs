@@ -239,16 +239,15 @@ impl SniffOrchestrator {
                 &self.config.phpshell_container_patterns,
                 host_root,
             ));
+            let roots = php_shell::dedupe_roots(roots);
             self.report_detector_batch(
                 &mut result,
                 "php-shell",
                 roots.len(),
                 "PHP shell scan",
-                self.detectors.detect_php_shell_anomalies(
-                    &self.pool,
-                    &roots,
-                    &self.config.phpshell_options,
-                )?,
+                self.detectors
+                    .detect_php_shell_anomalies(&self.pool, &roots, &self.config.phpshell_options)
+                    .await?,
             )
             .await?;
         }
@@ -1712,10 +1711,12 @@ mod tests {
             PhpShellAccessDetector::new(std::sync::Arc::new(std::sync::RwLock::new(vec![
                 FlaggedFile {
                     logical_path: "/var/www/html/wp-content/uploads/x.php".into(),
+                    root_logical: "/var/www/html".into(),
                     in_upload_dir: true,
                 },
                 FlaggedFile {
                     logical_path: "/var/www/html/index.php".into(),
+                    root_logical: "/var/www/html".into(),
                     in_upload_dir: false,
                 },
             ])));

@@ -31,6 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Requests to a flagged file no longer under-match when the scan root sits
+  under a directory the host calls `uploads`: the check that keeps `/x.php`
+  from naming a file in the site's own uploads tree now ignores the host path
+  above the root, the same way the file scan judges upload directories.
+- A name like `x.php.jpg` counts as PHP: misconfigured Apache
+  (`AddHandler php-script .php`) executes it, so the request rules and the
+  scan cover double extensions again.
+- Alerts over files larger than the scan limit label the digest
+  `sha256(first N bytes)`. It hashes what was read; an unlabeled one reads as
+  a mismatch against `sha256sum` on the real file.
+- Editing the extra-signatures JSON takes effect on the next pass: the
+  signature cache is keyed by the file's mtime, not its path alone. No
+  restart.
+- A host path and a container mount naming one directory scan once and report
+  once; the container name labels the finding, it is the more useful one.
+- The PHP shell scan writes its file rows in one transaction, and runs on a
+  blocking thread instead of stalling the sniff runtime.
 - Findings from one detector on one log source now arrive as one alert carrying
   the count and up to three sample lines. Five attackers used to mean one alert
   with the first line and four silently dropped. The aggregated alert carries

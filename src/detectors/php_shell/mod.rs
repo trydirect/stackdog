@@ -122,10 +122,22 @@ pub struct ContainerFilesystem {
 pub struct FlaggedFile {
     /// Path as the workload sees it, lowercased: `/var/www/html/up/x.php`.
     pub logical_path: String,
+    /// The scan root as the workload sees it, lowercased: `/var/www/html`.
+    /// The access detector needs it to tell the site's own directories from
+    /// the host path they sit under.
+    pub root_logical: String,
     pub in_upload_dir: bool,
 }
 
 pub type FlaggedFiles = Arc<RwLock<Vec<FlaggedFile>>>;
+
+/// `(configured path, its mtime, signatures)`. The mtime is part of the cache
+/// identity so editing the JSON reloads it on the next pass.
+type SignatureCache = Option<(
+    Option<String>,
+    Option<std::time::SystemTime>,
+    Arc<SignatureSet>,
+)>;
 
 #[derive(Debug, Clone)]
 struct CachedScan {
@@ -133,13 +145,16 @@ struct CachedScan {
     modified_at: i64,
     score: u32,
     logical_path: String,
+    /// Filled from the walking root on every pass; the database does not
+    /// store it, a file is only ever scanned under one root at a time.
+    root_logical: String,
     in_upload_dir: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct PhpShellScanner {
     flagged: FlaggedFiles,
-    signatures: Mutex<Option<(Option<String>, Arc<SignatureSet>)>>,
+    signatures: Mutex<SignatureCache>,
 }
 
 impl PhpShellScanner {
@@ -169,7 +184,10 @@ impl PhpShellScanner {
         let cached = load_cache(pool)?;
         let mut current: HashMap<String, CachedScan> = HashMap::new();
         let mut findings = Vec::new();
-        let conn = pool.get()?;
+        // One transaction for the whole pass: a scan over a big web root does
+        // thousands of inserts, and they land together or not at all.
+        let mut conn = pool.get()?;
+        let tx = conn.transaction()?;
 
         for root in roots {
             let mut candidates = Vec::new();
@@ -191,7 +209,13 @@ impl PhpShellScanner {
 
                 if let Some(hit) = cached.get(&key) {
                     if hit.size_bytes == size_bytes && hit.modified_at == modified_at {
-                        current.insert(key, hit.clone());
+                        current.insert(
+                            key,
+                            CachedScan {
+                                root_logical: root.logical_path.clone(),
+                                ..hit.clone()
+                            },
+                        );
                         continue;
                     }
                 }
@@ -203,8 +227,16 @@ impl PhpShellScanner {
                 let in_upload_dir = in_upload_dir_under(root, &path);
                 let verdict = score_file(&signatures, &path, &content, in_upload_dir);
                 let sha256 = format!("{:x}", Sha256::digest(&content));
+                // A file over the read limit is hashed as far as it was read.
+                // The alert says which, or `sha256sum` on the real file looks
+                // like a mismatch.
+                let hash_label = if size_bytes > content.len() as u64 {
+                    format!("sha256(first {} bytes)", content.len())
+                } else {
+                    "sha256".to_string()
+                };
 
-                conn.execute(
+                tx.execute(
                     "INSERT INTO php_shell_scans (
                         path, owner, logical_path, size_bytes, modified_at, sha256,
                         score, rules, in_upload_dir, scanned_at
@@ -234,7 +266,13 @@ impl PhpShellScanner {
                 )?;
 
                 if verdict.score >= FLAG_THRESHOLD {
-                    findings.push(file_finding(root, &logical_path, &sha256, &verdict));
+                    findings.push(file_finding(
+                        root,
+                        &logical_path,
+                        &hash_label,
+                        &sha256,
+                        &verdict,
+                    ));
                 }
 
                 current.insert(
@@ -244,6 +282,7 @@ impl PhpShellScanner {
                         modified_at,
                         score: verdict.score,
                         logical_path,
+                        root_logical: root.logical_path.clone(),
                         in_upload_dir,
                     },
                 );
@@ -251,12 +290,13 @@ impl PhpShellScanner {
         }
 
         // A file that is gone, or a root that is no longer scanned, leaves the
-        // cache: if it comes back it is scanned — and reported — again.
+        // cache: if it comes back it is scanned, and reported, again.
         for path in cached.keys() {
             if !current.contains_key(path) {
-                conn.execute("DELETE FROM php_shell_scans WHERE path = ?1", params![path])?;
+                tx.execute("DELETE FROM php_shell_scans WHERE path = ?1", params![path])?;
             }
         }
+        tx.commit()?;
 
         self.set_flagged(
             current
@@ -264,6 +304,7 @@ impl PhpShellScanner {
                 .filter(|scan| scan.score >= FLAG_THRESHOLD)
                 .map(|scan| FlaggedFile {
                     logical_path: scan.logical_path.to_ascii_lowercase(),
+                    root_logical: scan.root_logical.to_ascii_lowercase(),
                     in_upload_dir: scan.in_upload_dir,
                 })
                 .collect(),
@@ -285,8 +326,16 @@ impl PhpShellScanner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Some((path, set)) = slot.as_ref() {
-            if path == &options.signatures_path {
+        // The mtime is part of the cache identity: editing the JSON takes
+        // effect on the next pass, no restart.
+        let stamp = options
+            .signatures_path
+            .as_deref()
+            .and_then(|path| fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+
+        if let Some((path, stamped, set)) = slot.as_ref() {
+            if path == &options.signatures_path && *stamped == stamp {
                 return Arc::clone(set);
             }
         }
@@ -299,7 +348,7 @@ impl PhpShellScanner {
             None => SignatureSet::builtin(),
         };
         let set = Arc::new(set);
-        *slot = Some((options.signatures_path.clone(), Arc::clone(&set)));
+        *slot = Some((options.signatures_path.clone(), stamp, Arc::clone(&set)));
         set
     }
 }
@@ -343,6 +392,7 @@ fn score_file(signatures: &SignatureSet, path: &Path, content: &[u8], upload_dir
 fn file_finding(
     root: &ScanRoot,
     logical_path: &str,
+    hash_label: &str,
     sha256: &str,
     verdict: &Verdict,
 ) -> DetectorFinding {
@@ -350,11 +400,12 @@ fn file_finding(
         detector_id: FILE_DETECTOR_ID.into(),
         family: DetectorFamily::Web,
         description: format!(
-            "PHP shell indicators in {} on {} (score {}: {}; sha256 {})",
+            "PHP shell indicators in {} on {} (score {}: {}; {} {})",
             logical_path,
             root.owner,
             verdict.score,
             verdict.rules.join(", "),
+            hash_label,
             &sha256[..16.min(sha256.len())]
         ),
         severity: if verdict.score >= CRITICAL_THRESHOLD {
@@ -381,6 +432,7 @@ fn load_cache(pool: &DbPool) -> Result<HashMap<String, CachedScan>> {
                 modified_at: row.get(2)?,
                 score: row.get::<_, i64>(3)? as u32,
                 logical_path: row.get(4)?,
+                root_logical: String::new(),
                 in_upload_dir: row.get::<_, i64>(5)? != 0,
             },
         ))
@@ -485,10 +537,22 @@ fn logical_path(root: &ScanRoot, path: &Path) -> String {
     }
 }
 
+/// The name can execute as PHP: `index.php`, and also `x.php.jpg`, because a
+/// misconfigured Apache (`AddHandler php-script .php`) executes any file with
+/// a PHP extension anywhere in its name. That name is exactly what a
+/// double-extension upload leaves behind, so every extension counts, not only
+/// the last one.
+pub(crate) fn is_php_name(file_name: &str) -> bool {
+    file_name
+        .split('.')
+        .skip(1) // the basename is not an extension
+        .any(|ext| PHP_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
 fn has_php_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| PHP_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(is_php_name)
         .unwrap_or(false)
 }
 
@@ -635,6 +699,27 @@ fn is_docroot(destination: &str) -> bool {
 fn path_within(path: &str, base: &str) -> bool {
     let base = base.trim_end_matches('/');
     path == base || path.starts_with(&format!("{}/", base))
+}
+
+/// Drop roots that point at the same directory.
+///
+/// A host path and a container mount often name one directory (`/var/www/html`
+/// configured on the host and mounted into the web container). Scanned twice,
+/// the same file reports twice. A container name is the more useful owner, so
+/// it wins over `host`; anything else keeps the first root.
+pub fn dedupe_roots(roots: Vec<ScanRoot>) -> Vec<ScanRoot> {
+    let mut kept: Vec<ScanRoot> = Vec::new();
+    for root in roots {
+        match kept
+            .iter_mut()
+            .find(|existing| existing.fs_path == root.fs_path)
+        {
+            Some(existing) if existing.owner == "host" && root.owner != "host" => *existing = root,
+            Some(_) => {}
+            None => kept.push(root),
+        }
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -872,6 +957,97 @@ mod tests {
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].logical_path, "/var/www");
         assert!(roots[0].fs_path.ends_with("merged/var/www"));
+    }
+
+    #[test]
+    fn test_file_hash_is_labeled_when_the_read_was_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = SHELL.repeat(512);
+        fs::write(dir.path().join("big.php"), &big).unwrap();
+
+        let options = PhpShellOptions {
+            max_file_bytes: 1024,
+            ..PhpShellOptions::default()
+        };
+        let findings = PhpShellScanner::new()
+            .detect(&pool(), &[root(dir.path())], &options)
+            .unwrap();
+        assert_eq!(findings.len(), 1);
+        // The digest covers the first 1024 bytes and the alert says so, or
+        // `sha256sum` on the real file reads as a mismatch.
+        assert!(findings[0].description.contains("sha256(first 1024 bytes)"));
+    }
+
+    #[test]
+    fn test_edited_signatures_reload_without_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extra-signatures.json");
+        let stamp = |seconds: u64| {
+            let file = fs::File::options().append(true).open(&path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        };
+
+        fs::write(
+            &path,
+            r#"[{"id":"t1","description":"first","pattern":"MARKER_ONE","weight":"strong"}]"#,
+        )
+        .unwrap();
+        stamp(1_700_000_000);
+
+        let scanner = PhpShellScanner::new();
+        let options = PhpShellOptions {
+            signatures_path: Some(path.to_string_lossy().into_owned()),
+            ..PhpShellOptions::default()
+        };
+        let builtin_len = SignatureSet::builtin().len();
+        assert_eq!(scanner.signature_set(&options).len(), builtin_len + 1);
+        // Same file, same mtime: the cache holds.
+        assert_eq!(scanner.signature_set(&options).len(), builtin_len + 1);
+
+        fs::write(
+            &path,
+            r#"[{"id":"t1","description":"first","pattern":"MARKER_ONE","weight":"strong"},
+                {"id":"t2","description":"second","pattern":"MARKER_TWO","weight":"strong"}]"#,
+        )
+        .unwrap();
+        stamp(1_700_000_300);
+
+        // The edit takes effect on the next pass, no restart.
+        assert_eq!(scanner.signature_set(&options).len(), builtin_len + 2);
+    }
+
+    #[test]
+    fn test_dedupe_roots_prefers_the_container_owner() {
+        let host = ScanRoot {
+            fs_path: PathBuf::from("/host/var/www/html"),
+            logical_path: "/var/www/html".into(),
+            owner: "host".into(),
+        };
+        let wordpress = ScanRoot {
+            owner: "wordpress".into(),
+            ..host.clone()
+        };
+        let blog = ScanRoot {
+            fs_path: PathBuf::from("/host/var/www/blog"),
+            logical_path: "/var/www/blog".into(),
+            owner: "blog".into(),
+        };
+
+        // The host path and the mount are one directory: one root.
+        let roots = dedupe_roots(vec![host.clone(), wordpress.clone(), blog.clone()]);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].owner, "wordpress");
+        assert_eq!(roots[1].owner, "blog");
+
+        // Two containers on one volume: the first name wins.
+        let shop = ScanRoot {
+            owner: "shop".into(),
+            ..host
+        };
+        let roots = dedupe_roots(vec![wordpress, blog, shop]);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].owner, "wordpress");
     }
 
     /// False-positive check against real code, vendor directories included:

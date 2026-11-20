@@ -15,6 +15,7 @@ pub mod php_shell;
 pub mod sshole;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -112,7 +113,7 @@ pub struct DetectorRegistry {
     config_assessment_monitor: ConfigAssessmentMonitor,
     package_inventory_monitor: PackageInventoryMonitor,
     docker_posture_monitor: DockerPostureMonitor,
-    php_shell_scanner: PhpShellScanner,
+    php_shell_scanner: Arc<PhpShellScanner>,
     php_version_monitor: PhpVersionMonitor,
     sshole_monitor: SshVersionMonitor,
     nginx_exposure_monitor: NginxExposureMonitor,
@@ -130,7 +131,7 @@ impl DetectorRegistry {
             config_assessment_monitor: ConfigAssessmentMonitor,
             package_inventory_monitor: PackageInventoryMonitor,
             docker_posture_monitor: DockerPostureMonitor,
-            php_shell_scanner: PhpShellScanner::new(),
+            php_shell_scanner: Arc::new(PhpShellScanner::new()),
             php_version_monitor: PhpVersionMonitor::new(),
             sshole_monitor: SshVersionMonitor::new(),
             nginx_exposure_monitor: NginxExposureMonitor::new(),
@@ -206,15 +207,21 @@ impl DetectorRegistry {
             .collect())
     }
 
-    pub fn detect_php_shell_anomalies(
+    /// The scan does blocking file and database work, so it runs on a blocking
+    /// thread rather than stalling the sniff runtime, like `detect_cve_anomalies`.
+    pub async fn detect_php_shell_anomalies(
         &self,
         pool: &DbPool,
         roots: &[ScanRoot],
         options: &PhpShellOptions,
     ) -> Result<Vec<LogAnomaly>> {
-        Ok(self
-            .php_shell_scanner
-            .detect(pool, roots, options)?
+        let pool = pool.clone();
+        let roots = roots.to_vec();
+        let options = options.clone();
+        let scanner = Arc::clone(&self.php_shell_scanner);
+        let findings =
+            tokio::task::spawn_blocking(move || scanner.detect(&pool, &roots, &options)).await??;
+        Ok(findings
             .into_iter()
             .map(|finding| finding.to_log_anomaly())
             .collect())

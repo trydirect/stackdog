@@ -604,6 +604,10 @@ volumes:
 | `web.php-shell-access` | any request to a flagged PHP upload whose URL goes through `uploads/`; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
 | `php.shell-request` | a plain visit to a flagged page such as `index.php`, and every request to a flagged non-PHP file: a polyglot image with PHP inside is loaded by the audience | alert only, never a ban. Banning visitors of an infected page would ban its audience |
 
+A PHP file is any name with a PHP extension in it, `x.php.jpg` included:
+misconfigured Apache (`AddHandler php-script .php`) executes that too, and
+that name is what a double-extension upload leaves behind.
+
 Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
 protected local addresses and the per-minute ceiling all apply. Stackdog never
 deletes or moves the file; removing it is your call.

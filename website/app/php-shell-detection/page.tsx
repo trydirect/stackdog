@@ -50,7 +50,7 @@ const responseRows = [
   ['php.shell-file', 'A new or changed file scores 3 or more', 'Alert. High, or Critical at 5+.'],
   [
     'web.php-shell-access',
-    'Any request to a flagged PHP upload whose URL goes through uploads/; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an uploads/ URL',
+    'Any request to a flagged PHP upload whose URL goes through uploads/; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an uploads/ URL. A name like x.php.jpg counts as PHP: misconfigured Apache (AddHandler php-script .php) executes it too.',
     'Alert and an offense against the client IP. The IP is banned once it reaches the ban threshold.'
   ],
   [
