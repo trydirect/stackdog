@@ -4,6 +4,7 @@
 //! them via the existing notification channels.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::alerting::alert::{Alert, AlertSeverity, AlertType};
 use crate::alerting::dedup::{AlertDeduplicator, DedupConfig};
@@ -12,7 +13,7 @@ use crate::database::connection::DbPool;
 use crate::database::models::{Alert as StoredAlert, AlertMetadata};
 use crate::database::repositories::alerts::create_alert;
 use crate::database::repositories::log_sources;
-use crate::sniff::analyzer::{AnomalySeverity, LogSummary};
+use crate::sniff::analyzer::{AnomalySeverity, LogAnomaly, LogSummary};
 use crate::sniff::discovery::{LogSource, LogSourceType};
 use anyhow::Result;
 
@@ -78,9 +79,25 @@ impl Reporter {
             );
         }
 
-        // Generate alerts for anomalies
-        for anomaly in &summary.anomalies {
-            let alert_severity = Self::map_severity(&anomaly.severity);
+        // Generate alerts for anomalies. Findings that share a dedup key (one
+        // detector on one source) arrive as one alert carrying every sample and
+        // the count: a pass that saw five attackers says so, instead of showing
+        // the first one and dropping the rest.
+        for (key, members) in group_findings(&summary.anomalies, source) {
+            if self.deduplicator.borrow_mut().is_duplicate_key(&key) {
+                log::debug!("Suppressing duplicate alert: {}", members[0].description);
+                continue;
+            }
+
+            // The alert stands for the whole group, so it carries the worst
+            // severity in it: a Critical probe must not hide behind a Low one
+            // that happened to arrive first.
+            let alert_severity = members
+                .iter()
+                .map(|member| Self::map_severity(&member.severity))
+                .max()
+                .expect("a finding group is never empty");
+            let anomaly = members[0];
 
             log::debug!(
                 "Generating alert: severity={}, description={}",
@@ -88,20 +105,11 @@ impl Reporter {
                 anomaly.description
             );
 
-            let mut message = format!(
-                "[Log Sniff] {} — Source: {} | Sample: {}",
-                anomaly.description, source_label, anomaly.sample_line
-            );
+            let mut message = group_message(anomaly, &members, &source_label);
             if let Some(ref action) = anomaly.suggested_action {
                 message.push_str(&format!("\nSuggested: {}", action));
             }
             let alert = Alert::new(AlertType::AnomalyDetected, alert_severity, message.clone());
-
-            let dedup_key = dedup_key(anomaly, source);
-            if self.deduplicator.borrow_mut().is_duplicate_key(&dedup_key) {
-                log::debug!("Suppressing duplicate alert: {}", anomaly.description);
-                continue;
-            }
 
             if let Some(pool) = pool {
                 // Record the stable identity (path or container ID), not the
@@ -203,6 +211,69 @@ fn description_signature(description: &str) -> String {
         .join("-")
 }
 
+/// Group findings by their dedup key, preserving first-appearance order.
+///
+/// One pass over one log source can raise the same detector many times (five
+/// attackers, five lines). They share a dedup key and become one alert, so the
+/// grouping is what the alert describes.
+fn group_findings<'a>(
+    anomalies: &'a [LogAnomaly],
+    source: Option<&LogSource>,
+) -> Vec<(String, Vec<&'a LogAnomaly>)> {
+    let mut groups: Vec<(String, Vec<&LogAnomaly>)> = Vec::new();
+    let mut positions: HashMap<String, usize> = HashMap::new();
+    for anomaly in anomalies {
+        let key = dedup_key(anomaly, source);
+        match positions.get(&key) {
+            Some(&position) => groups[position].1.push(anomaly),
+            None => {
+                positions.insert(key.clone(), groups.len());
+                groups.push((key, vec![anomaly]));
+            }
+        }
+    }
+    groups
+}
+
+/// How many sample lines an aggregated alert shows before it starts counting.
+const SHOWN_SAMPLES: usize = 3;
+
+/// Render the alert message for one group of findings.
+///
+/// A single finding keeps the plain `Sample:` line. More than one becomes a
+/// single message with the count and up to three samples, plus a
+/// `...and N more like this` tail, so the alert says how much of the log the
+/// pass had to chew through without turning into a stream.
+fn group_message(
+    representative: &LogAnomaly,
+    members: &[&LogAnomaly],
+    source_label: &str,
+) -> String {
+    if members.len() == 1 {
+        return format!(
+            "[Log Sniff] {} — Source: {} | Sample: {}",
+            representative.description, source_label, representative.sample_line
+        );
+    }
+    let mut message = format!(
+        "[Log Sniff] {} — Source: {} | {} findings like this | Samples:",
+        representative.description,
+        source_label,
+        members.len()
+    );
+    for member in members.iter().take(SHOWN_SAMPLES) {
+        message.push('\n');
+        message.push_str(&member.sample_line);
+    }
+    if members.len() > SHOWN_SAMPLES {
+        message.push_str(&format!(
+            "\n...and {} more like this",
+            members.len() - SHOWN_SAMPLES
+        ));
+    }
+    message
+}
+
 /// Build the key that decides whether a finding is a repeat.
 ///
 /// Severity is deliberately excluded: the same finding can come back scored
@@ -215,7 +286,7 @@ fn description_signature(description: &str) -> String {
 /// `sample_line` names the thing (`host:/var/www/x.php`, `shop image
 /// PHP_VERSION 8.3.30`), so it joins the key. Log findings keep the detector
 /// id alone: their sample is a raw line with a timestamp.
-fn dedup_key(anomaly: &crate::sniff::analyzer::LogAnomaly, source: Option<&LogSource>) -> String {
+fn dedup_key(anomaly: &LogAnomaly, source: Option<&LogSource>) -> String {
     let finding = match (&anomaly.detector_id, source) {
         (Some(detector_id), Some(_)) => detector_id.clone(),
         (Some(detector_id), None) => format!("{}:{}", detector_id, anomaly.sample_line),
@@ -646,6 +717,136 @@ mod tests {
         let result = reporter.report(&summary, None, None).await.unwrap();
         assert_eq!(result.anomalies_reported, 2);
         assert_eq!(result.notifications_sent, 2);
+    }
+
+    fn sqli_finding(sample: &str, severity: AnomalySeverity) -> LogAnomaly {
+        LogAnomaly {
+            description: "Potential SQL injection probing detected".into(),
+            severity,
+            sample_line: sample.into(),
+            detector_id: Some("web.sqli-probe".into()),
+            detector_family: Some("Web".into()),
+            confidence: Some(84),
+            suggested_action: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_report_aggregates_findings_that_share_a_key() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/nginx/access.log".into(),
+            "access.log".into(),
+        );
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
+
+        // Five probes in one pass: one detector, one log source.
+        let summary = make_summary(vec![
+            sqli_finding("10:00:01 GET /?q=UNION%20SELECT", AnomalySeverity::High),
+            sqli_finding("10:00:02 GET /?q=1%27%20OR%201", AnomalySeverity::High),
+            sqli_finding("10:00:03 GET /?q=UNION%20SELECT%202", AnomalySeverity::High),
+            sqli_finding("10:00:04 GET /?q=UNION%20SELECT%203", AnomalySeverity::High),
+            sqli_finding("10:00:05 GET /?q=UNION%20SELECT%204", AnomalySeverity::High),
+        ]);
+        let result = reporter
+            .report(&summary, Some(&pool), Some(&source))
+            .await
+            .unwrap();
+
+        // One alert, and it accounts for all five.
+        assert_eq!(result.anomalies_reported, 5);
+        assert_eq!(result.notifications_sent, 1);
+        let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        let message = &alerts[0].message;
+        assert!(message.contains("5 findings like this"));
+        assert!(message.contains("10:00:01"));
+        assert!(message.contains("10:00:02"));
+        assert!(message.contains("10:00:03"));
+        assert!(!message.contains("10:00:04"));
+        assert!(message.contains("...and 2 more like this"));
+    }
+
+    #[tokio::test]
+    async fn test_report_aggregation_lists_every_sample_below_the_cap() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/nginx/access.log".into(),
+            "access.log".into(),
+        );
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
+
+        let summary = make_summary(vec![
+            sqli_finding("10:00:01 GET /?q=UNION%20SELECT", AnomalySeverity::High),
+            sqli_finding("10:00:02 GET /?q=1%27%20OR%201", AnomalySeverity::High),
+        ]);
+        reporter
+            .report(&summary, Some(&pool), Some(&source))
+            .await
+            .unwrap();
+
+        let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
+        let message = &alerts[0].message;
+        assert!(message.contains("2 findings like this"));
+        assert!(message.contains("10:00:01"));
+        assert!(message.contains("10:00:02"));
+        assert!(!message.contains("more like this"));
+    }
+
+    #[tokio::test]
+    async fn test_report_aggregation_takes_the_worst_severity() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/nginx/access.log".into(),
+            "access.log".into(),
+        );
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
+
+        // A Low finding first must not hide the Critical one behind it.
+        let summary = make_summary(vec![
+            sqli_finding("10:00:01 GET /?q=1", AnomalySeverity::Low),
+            sqli_finding("10:00:05 GET /?q=2", AnomalySeverity::Critical),
+        ]);
+        reporter
+            .report(&summary, Some(&pool), Some(&source))
+            .await
+            .unwrap();
+
+        let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Critical);
+    }
+
+    #[tokio::test]
+    async fn test_report_single_finding_keeps_the_plain_sample_line() {
+        let pool = create_pool(":memory:").unwrap();
+        init_database(&pool).unwrap();
+        let source = LogSource::new(
+            LogSourceType::SystemLog,
+            "/var/log/nginx/access.log".into(),
+            "access.log".into(),
+        );
+        let reporter = Reporter::new(NotificationConfig::default(), 300);
+
+        let summary = make_summary(vec![sqli_finding(
+            "10:00:01 GET /?q=UNION%20SELECT",
+            AnomalySeverity::High,
+        )]);
+        reporter
+            .report(&summary, Some(&pool), Some(&source))
+            .await
+            .unwrap();
+
+        let alerts = list_alerts(&pool, AlertFilter::default()).await.unwrap();
+        let message = &alerts[0].message;
+        assert!(message.contains("| Sample: 10:00:01 GET /?q=UNION%20SELECT"));
+        assert!(!message.contains("findings like this"));
     }
 
     #[tokio::test]

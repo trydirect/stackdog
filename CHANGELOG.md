@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Findings from one detector on one log source now arrive as one alert carrying
+  the count and up to three sample lines. Five attackers used to mean one alert
+  with the first line and four silently dropped. The aggregated alert carries
+  the worst severity in the group, so a Critical probe no longer hides behind a
+  Low one that arrived first.
 - A flagged non-PHP file no longer bans visitors. A polyglot image with PHP
   inside is served as plain bytes to everyone who loads the page it is embedded
   in, so requests to it are the audience: they are now an alert-only finding,
