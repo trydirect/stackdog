@@ -13,15 +13,30 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
+          # musl targets link statically, so the builder image sets no
+          # glibc floor the way a gnu target would: the binary runs on any
+          # Linux. cross compiles inside its own containers.
           - target: x86_64-unknown-linux-musl
             artifact: stackdog-linux-x86_64
+            runner: ubuntu-latest
+            cross: true
           - target: aarch64-unknown-linux-musl
             artifact: stackdog-linux-aarch64
+            runner: ubuntu-latest
+            cross: true
+          - target: aarch64-apple-darwin
+            artifact: stackdog-macos-aarch64
+            runner: macos-latest
+            cross: false
+          - target: x86_64-apple-darwin
+            artifact: stackdog-macos-x86_64
+            runner: macos-latest
+            cross: false
 
     steps:
       - name: Checkout
@@ -33,20 +48,27 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross
+        if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build release binary
+      - name: Build release binary (cross)
+        if: matrix.cross
         env:
           CARGO_TARGET_DIR: target-cross
         run: cross build --release --target ${{ matrix.target }}
 
+      - name: Build release binary
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
       - name: Package
         run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then SRC=target-cross; else SRC=target; fi
           mkdir -p dist
-          cp target-cross/${{ matrix.target }}/release/stackdog dist/stackdog
+          cp $SRC/${{ matrix.target }}/release/stackdog dist/stackdog
           cd dist
           tar czf ${{ matrix.artifact }}.tar.gz stackdog
-          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
