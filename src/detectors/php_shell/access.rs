@@ -5,14 +5,19 @@
 //! request is grounds for a ban only when it can come from nobody but the
 //! attacker:
 //!
-//! - any request to a flagged file in an upload directory, with the upload
-//!   directory in the URL — no visitor has a reason to execute an upload;
-//! - a request with parameters (query string or POST) to a flagged file that
-//!   is not a common entry point — that is someone driving the shell;
+//! - any request to a flagged PHP file in an upload directory, with the upload
+//!   directory in the URL. No visitor has a reason to execute an upload;
+//! - a request with parameters (query string or POST) to a flagged PHP file
+//!   that is not a common entry point: that is someone driving the shell;
 //! - a POST to any PHP file under an `uploads/` URL, flagged or not yet.
 //!
 //! The URL side of "upload directory" is only `uploads/`: `/images/`,
 //! `/files/` and `/tmp/` are ordinary URL trees with real PHP endpoints.
+//!
+//! A flagged non-PHP file is never grounds for a ban. A polyglot image with
+//! PHP inside is served as plain bytes to every visitor of the page it is
+//! embedded in, so the requests it collects are the audience. It stays an
+//! alert, like the file scan that flagged it.
 //!
 //! Other requests to flagged files raise an alert-only finding.
 
@@ -151,10 +156,17 @@ fn judge(request: &HttpRequest, flagged: &[FlaggedFile]) -> Option<Verdict> {
     {
         // The URL must carry the upload directory itself: a suffix match of
         // `/index.php` against `.../uploads/index.php` is the front page.
-        if file.in_upload_dir && url_in_uploads {
+        // Only a PHP file executes a request: a flagged polyglot image is
+        // served as plain bytes to whoever loads the page it is embedded in,
+        // so a ban here would ban the audience. Non-PHP flagged files fall
+        // through to the alert below.
+        if is_php(file_name) && file.in_upload_dir && url_in_uploads {
             return Some(Verdict::Ban("flagged file in an upload directory"));
         }
-        if request.has_parameters() && !COMMON_ENTRY_POINTS.contains(&file_name) {
+        if is_php(file_name)
+            && request.has_parameters()
+            && !COMMON_ENTRY_POINTS.contains(&file_name)
+        {
             return Some(Verdict::Ban("parameters sent to a flagged file"));
         }
         return Some(Verdict::Alert);
@@ -386,6 +398,26 @@ mod tests {
             "/uploads/y.PHP/z",
         )]));
         assert_eq!(found[0].detector_id, ACCESS_DETECTOR_ID);
+    }
+
+    #[test]
+    fn test_flagged_polyglot_image_never_bans_visitors() {
+        // A polyglot GIF (PHP inside an image) is flagged by the file scan,
+        // but every request to it is a browser loading a picture. Those are
+        // visitors: alert only.
+        let detector = detector(&[("/var/www/html/wp-content/uploads/2026/avatar.gif", true)]);
+        for (method, target) in [
+            ("GET", "/wp-content/uploads/2026/avatar.gif"),
+            ("GET", "/wp-content/uploads/2026/avatar.gif?v=2"),
+            ("POST", "/wp-content/uploads/2026/avatar.gif"),
+        ] {
+            let found = detector.detect(&entries(&[&line("203.0.113.9", method, target)]));
+            assert_eq!(found.len(), 1, "{method} {target}");
+            assert_eq!(
+                found[0].detector_id, REQUEST_DETECTOR_ID,
+                "{method} {target}"
+            );
+        }
     }
 
     #[test]

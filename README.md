@@ -601,8 +601,8 @@ volumes:
 | Finding | When | Action |
 |---|---|---|
 | `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
-| `web.php-shell-access` | any request to a flagged upload whose URL goes through `uploads/`; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
-| `php.shell-request` | a plain visit to a flagged page such as `index.php` | alert only, never a ban — banning visitors of an infected page would ban its audience |
+| `web.php-shell-access` | any request to a flagged PHP upload whose URL goes through `uploads/`; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
+| `php.shell-request` | a plain visit to a flagged page such as `index.php`, and every request to a flagged non-PHP file: a polyglot image with PHP inside is loaded by the audience | alert only, never a ban. Banning visitors of an infected page would ban its audience |
 
 Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
 protected local addresses and the per-minute ceiling all apply. Stackdog never

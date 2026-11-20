@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    of these name a client address, so none ban.
   `STACKDOG_NGINX2ROOT_ENABLED` and `STACKDOG_KERNEL_SCTP_ENABLED` toggle them.
 
+### Fixed
+
+- A flagged non-PHP file no longer bans visitors. A polyglot image with PHP
+  inside is served as plain bytes to everyone who loads the page it is embedded
+  in, so requests to it are the audience: they are now an alert-only finding,
+  like the file scan that flagged it. The two request rules that ban now apply
+  to flagged PHP files only.
+
 ## [0.3.1] - 2026-11-13
 
 ### Added

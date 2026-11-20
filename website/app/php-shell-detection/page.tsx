@@ -19,7 +19,7 @@ const layers = [
     name: 'Access-log correlation',
     status: 'Available',
     description:
-      'Requests to flagged files, and POSTs to PHP under uploads/ URLs, are picked out of nginx, Apache and application access logs — with the client address that sent them.',
+      'Requests to flagged files, and POSTs to PHP under uploads/ URLs, are picked out of nginx, Apache and application access logs, with the client address that sent them.',
     icon: ScrollText
   },
   {
@@ -50,12 +50,12 @@ const responseRows = [
   ['php.shell-file', 'A new or changed file scores 3 or more', 'Alert. High, or Critical at 5+.'],
   [
     'web.php-shell-access',
-    'Any request to a flagged upload whose URL goes through uploads/; a request with parameters to a flagged file that is not a common entry point; a POST to PHP under an uploads/ URL',
+    'Any request to a flagged PHP upload whose URL goes through uploads/; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an uploads/ URL',
     'Alert and an offense against the client IP. The IP is banned once it reaches the ban threshold.'
   ],
   [
     'php.shell-request',
-    'A plain visit to a flagged page, or any request to a flagged common entry point such as index.php or wp-login.php. /images/, /files/ and /tmp/ URLs count as ordinary pages.',
+    'A plain visit to a flagged page, or any request to a flagged common entry point such as index.php or wp-login.php. Every request to a flagged non-PHP file lands here too: a polyglot image with PHP inside is loaded by the audience. /images/, /files/ and /tmp/ URLs count as ordinary pages.',
     'Alert only, never a ban. Banning visitors of an infected page would ban its audience.'
   ]
 ] as const;
