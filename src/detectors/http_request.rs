@@ -1,10 +1,17 @@
 //! Extract the HTTP request a log line records.
 //!
 //! Web detectors used to match their indicators anywhere in a line. An
-//! application that logs whole requests — headers, bodies, its own
-//! middleware names — then trips them on its own traffic: stacker's agent
+//! application that logs whole requests, headers, bodies, its own
+//! middleware names, then trips them on its own traffic: stacker's agent
 //! long-poll lines carried enough header text to read as webshell probing.
 //! Detectors that are about the URL should look at the URL only.
+//!
+//! One false-positive class is known and left in place: a log line that
+//! *quotes* a request inside its own text, an application logging request
+//! headers or bodies verbatim or a message like `blocked: "GET /x.php?cmd=id
+//! HTTP/1.1"`, parses as that request. Nothing in a line tells a quotation
+//! from a record. The detectors that ban on these requests count offenses
+//! first, which is what keeps one quoted line from exiling anyone.
 
 use std::sync::OnceLock;
 

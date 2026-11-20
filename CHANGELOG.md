@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    of these name a client address, so none ban.
   `STACKDOG_NGINX2ROOT_ENABLED` and `STACKDOG_KERNEL_SCTP_ENABLED` toggle them.
 
+### Changed
+
+- Detector ids follow the `family.name` convention: `php.shell-file` is now
+  `web.php-shell-file` and `php.shell-request` is `web.php-shell-request`,
+  matching their `Web` family and the neighboring `web.php-shell-access`.
+  Alerts already stored keep the id they were recorded with.
+
 ### Fixed
 
 - Requests to a flagged file no longer under-match when the scan root sits

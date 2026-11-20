@@ -801,8 +801,8 @@ fn should_auto_ban(anomaly: &analyzer::LogAnomaly) -> bool {
         // check below. The PHP2Shell and SSHole findings name no client at all.
         if matches!(
             detector_id,
-            "php.shell-file"
-                | "php.shell-request"
+            "web.php-shell-file"
+                | "web.php-shell-request"
                 | "vuln.php2shell"
                 | "php.worker-crash"
                 | "vuln.sshole"
@@ -1750,15 +1750,18 @@ mod tests {
             r#"198.51.100.7 - - [31/Oct/2026:10:00:00 +0000] "GET /index.php?p=42 HTTP/1.1" 200 5 "-" "x""#,
         ]);
         assert_eq!(visit.len(), 1);
-        assert_eq!(visit[0].detector_id.as_deref(), Some("php.shell-request"));
+        assert_eq!(
+            visit[0].detector_id.as_deref(),
+            Some("web.php-shell-request")
+        );
         assert!(!should_auto_ban(&visit[0]));
     }
 
     #[test]
     fn test_php_alert_only_findings_never_ban_whatever_the_wording() {
         for detector_id in [
-            "php.shell-file",
-            "php.shell-request",
+            "web.php-shell-file",
+            "web.php-shell-request",
             "vuln.php2shell",
             "php.worker-crash",
             "vuln.sshole",

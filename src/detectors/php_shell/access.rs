@@ -37,7 +37,7 @@ use super::{is_php_name, FlaggedFile, FlaggedFiles};
 
 pub const ACCESS_DETECTOR_ID: &str = "web.php-shell-access";
 /// Alert-only: a flagged file was requested in a way visitors also do.
-pub const REQUEST_DETECTOR_ID: &str = "php.shell-request";
+pub const REQUEST_DETECTOR_ID: &str = "web.php-shell-request";
 
 /// One finding per client per pass is enough to count an offense; more only
 /// floods the alert channel.

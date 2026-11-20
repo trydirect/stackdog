@@ -600,9 +600,9 @@ volumes:
 
 | Finding | When | Action |
 |---|---|---|
-| `php.shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
+| `web.php-shell-file` | a new or changed file scores as a shell | alert (a file names no attacker) |
 | `web.php-shell-access` | any request to a flagged PHP upload whose URL goes through `uploads/`; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an `uploads/` URL (`/images/`, `/files/`, `/tmp/` URLs never ban on their own) | alert + IP ban |
-| `php.shell-request` | a plain visit to a flagged page such as `index.php`, and every request to a flagged non-PHP file: a polyglot image with PHP inside is loaded by the audience | alert only, never a ban. Banning visitors of an infected page would ban its audience |
+| `web.php-shell-request` | a plain visit to a flagged page such as `index.php`, and every request to a flagged non-PHP file: a polyglot image with PHP inside is loaded by the audience | alert only, never a ban. Banning visitors of an infected page would ban its audience |
 
 A PHP file is any name with a PHP extension in it, `x.php.jpg` included:
 misconfigured Apache (`AddHandler php-script .php`) executes that too, and
@@ -611,6 +611,13 @@ that name is what a double-extension upload leaves behind.
 Bans go through the same gate as every other ban: `STACKDOG_IP_BAN_ALLOWLIST`,
 protected local addresses and the per-minute ceiling all apply. Stackdog never
 deletes or moves the file; removing it is your call.
+
+Requests are read from log lines, and one false-positive class is known and
+left in place: a line that quotes a request inside its own text, such as an
+application logging request headers or bodies verbatim or a message like
+`blocked: "GET /x.php?cmd=id HTTP/1.1"`, parses as that request. Nothing in a
+line tells a quotation from a record. Offense counting and the allowlist gate
+still stand between such a line and a ban.
 
 Add signatures without a rebuild by pointing `STACKDOG_PHPSHELL_SIGNATURES` at
 a JSON file:

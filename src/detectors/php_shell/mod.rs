@@ -32,7 +32,7 @@ use super::{DetectorFamily, DetectorFinding};
 
 pub use self::access::{PhpShellAccessDetector, ACCESS_DETECTOR_ID};
 
-pub const FILE_DETECTOR_ID: &str = "php.shell-file";
+pub const FILE_DETECTOR_ID: &str = "web.php-shell-file";
 
 /// Score at which a file is reported. One strong signal, or a medium plus a
 /// weak one; a PHP file in an upload directory alone (medium) is not enough,

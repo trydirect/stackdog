@@ -47,14 +47,14 @@ const signalRows = [
 ] as const;
 
 const responseRows = [
-  ['php.shell-file', 'A new or changed file scores 3 or more', 'Alert. High, or Critical at 5+.'],
+  ['web.php-shell-file', 'A new or changed file scores 3 or more', 'Alert. High, or Critical at 5+.'],
   [
     'web.php-shell-access',
     'Any request to a flagged PHP upload whose URL goes through uploads/; a request with parameters to a flagged PHP file that is not a common entry point; a POST to PHP under an uploads/ URL. A name like x.php.jpg counts as PHP: misconfigured Apache (AddHandler php-script .php) executes it too.',
     'Alert and an offense against the client IP. The IP is banned once it reaches the ban threshold.'
   ],
   [
-    'php.shell-request',
+    'web.php-shell-request',
     'A plain visit to a flagged page, or any request to a flagged common entry point such as index.php or wp-login.php. Every request to a flagged non-PHP file lands here too: a polyglot image with PHP inside is loaded by the audience. /images/, /files/ and /tmp/ URLs count as ordinary pages.',
     'Alert only, never a ban. Banning visitors of an infected page would ban its audience.'
   ]
@@ -126,7 +126,7 @@ const signatureSnippet = `[
 const runbookSteps = [
   {
     title: 'Read the alert',
-    body: 'A php.shell-file alert names the file as the workload sees it, the host or container it is on, the rules that matched, and the start of its SHA-256.'
+    body: 'A web.php-shell-file alert names the file as the workload sees it, the host or container it is on, the rules that matched, and the start of its SHA-256.'
   },
   {
     title: 'Check who is using it',
